@@ -1,0 +1,169 @@
+name: Apply UI hardening
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  ui-hardening:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply responsive UI fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="public/css/style.css"
+          MARKER="/* GL-LIVE UI HARDENING v1 */"
+          if grep -qF "$MARKER" "$FILE"; then
+            echo "UI hardening already present"
+            exit 0
+          fi
+          cat >> "$FILE" <<'CSS'
+
+/* GL-LIVE UI HARDENING v1 */
+/* Prevent flex/grid children and long labels from forcing horizontal overflow. */
+html, body { max-width: 100%; overflow-x: hidden; }
+*, *::before, *::after { min-width: 0; }
+button, a, input, select, textarea { max-width: 100%; }
+button, .btn { -webkit-tap-highlight-color: transparent; }
+
+/* Buttons: consistent sizing, readable labels, obvious interaction states. */
+.btn {
+  min-height: 40px;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+.btn.big { min-height: 48px; }
+.btn.small { min-height: 34px; }
+.btn:hover { filter: brightness(1.06); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.btn-vote, .btn-gold { font-weight: 900; }
+
+/* Header: let the navigation collapse before it can crush the brand. */
+.header-inner { min-width: 0; }
+.brand { min-width: 0; }
+.brand-text { overflow: hidden; text-overflow: ellipsis; }
+.main-nav { min-width: 0; }
+.header-right, .header-actions { min-width: 0; }
+
+/* Ranking rows: never let long names, countries or action labels push the grid out. */
+.lb-row > * { min-width: 0; }
+.lb-info, .lb-votes, .lb-actions { min-width: 0; }
+.lb-actions { flex-wrap: wrap; justify-content: flex-end; }
+.lb-actions .btn { min-width: 74px; flex: 1 1 74px; }
+.lb-country { max-width: 100%; }
+.votes-num { overflow-wrap: anywhere; }
+
+/* Cards and panels: safe wrapping for international names and translated copy. */
+.panel, .leader-card, .stat, .ad-slot, .trend-row, .footer-grid > * { min-width: 0; }
+.lc-top > div { min-width: 0; }
+.lc-name, .lc-country, .trend-row span, .ad-slot strong, .ad-slot p {
+  overflow-wrap: anywhere;
+}
+.lc-actions { flex-wrap: wrap; }
+.lc-actions .btn { min-width: 0; }
+
+/* Forms and modal content. */
+input, select, textarea { width: 100%; min-height: 44px; }
+input, select, textarea, .btn { font-size: max(0.9rem, 16px); }
+label { overflow-wrap: anywhere; }
+
+/* Tablet. */
+@media (max-width: 1180px) {
+  .home-grid { grid-template-columns: 170px minmax(0, 1fr) 240px; gap: 0.9rem; }
+  .lb-row { grid-template-columns: 52px 44px minmax(0, 1fr) auto auto; gap: 0.55rem; }
+  .lb-row .spark { display: none; }
+  .main-nav a { padding-inline: 0.55rem; letter-spacing: 0.06em; }
+}
+
+/* Compact tablet/mobile navigation. */
+@media (max-width: 900px) {
+  .header-inner { padding: 0.6rem 0.9rem; }
+  .main-nav {
+    display: none;
+    position: absolute;
+    left: 0.75rem;
+    right: 0.75rem;
+    top: calc(100% + 0.45rem);
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.55rem;
+    background: rgba(7, 11, 20, 0.97);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.35);
+  }
+  .main-nav.open { display: flex; }
+  .main-nav a { padding: 0.7rem 0.8rem; width: 100%; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; }
+  .home-grid { grid-template-columns: minmax(0, 1fr); }
+  .ad-col, .side-col { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lb-row { grid-template-columns: 46px 42px minmax(0, 1fr) auto; }
+  .lb-votes { min-width: 72px; }
+  .lb-actions { grid-column: 3 / -1; justify-content: stretch; }
+  .lb-actions .btn { flex: 1 1 0; }
+}
+
+/* Phone: stack dense ranking content and keep every action tappable. */
+@media (max-width: 640px) {
+  .brand-globe { font-size: 1.2rem; }
+  .brand-text { font-size: 0.82rem; letter-spacing: 0.03em; }
+  .live-badge { font-size: 0.56rem; padding-inline: 0.42rem; }
+  .header-right { gap: 0.35rem; }
+  .votes-pill { font-size: 0.68rem; padding-inline: 0.55rem; }
+  .hero { padding: 3rem 0.9rem 2rem; }
+  .hero h1 { font-size: clamp(1.7rem, 9vw, 2.5rem); }
+  .hero-kicker { letter-spacing: 0.13em; }
+  .hero-cta { display: grid; grid-template-columns: 1fr; width: min(100%, 420px); margin-inline: auto; }
+  .hero-cta .btn { width: 100%; }
+  .stats-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat:last-child { grid-column: 1 / -1; }
+  .stat-label { letter-spacing: 0.1em; }
+  .home-grid, .cards-grid { padding-inline: 0.75rem; }
+  .panel { padding: 0.9rem; }
+  .panel-head { align-items: flex-start; gap: 0.6rem; }
+  .panel-head h2, .panel > h2 { font-size: 0.88rem; letter-spacing: 0.05em; }
+  .lb-row {
+    grid-template-columns: 40px 40px minmax(0, 1fr);
+    gap: 0.55rem;
+    padding: 0.65rem;
+  }
+  .lb-rank { align-self: start; }
+  .portrait { width: 40px; height: 40px; }
+  .lb-name { font-size: 0.92rem; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+  .lb-country { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+  .lb-votes { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; text-align: left; padding-left: 80px; }
+  .lb-votes .votes-num { display: inline; }
+  .lb-actions { grid-column: 1 / -1; }
+  .lb-actions .btn { min-height: 42px; }
+  .ad-col, .side-col { grid-template-columns: 1fr; }
+  .cards-grid { grid-template-columns: 1fr; }
+  .lc-actions .btn { flex: 1 1 0; }
+  .page-head { padding-inline: 0.9rem; }
+  .page-head h1 { overflow-wrap: anywhere; }
+}
+
+/* Very narrow phones. */
+@media (max-width: 390px) {
+  .brand-text { font-size: 0.74rem; }
+  .votes-pill { display: none; }
+  .hero h1 { font-size: 1.65rem; }
+  .lb-votes { padding-left: 0; }
+  .lb-actions { flex-direction: column; }
+  .lb-actions .btn { width: 100%; }
+}
+CSS
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$FILE"
+          git commit -m "fix: harden responsive UI and button layout"
+          git push
