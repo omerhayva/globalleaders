@@ -14,13 +14,9 @@ const FLAG = cc => String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1A
 function getOrCreateVoteSession(sessionId, ip, ua) {
   const day = dayStr();
   const id = sessionId + ':' + day;
-  let vs = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
-  if (!vs) {
-    db.prepare(`INSERT INTO vote_sessions (id,session_id,day,ip,ua_hash) VALUES (?,?,?,?,?)`)
-      .run(id, sessionId, day, fraud.hash(ip), fraud.hash(ua || ''));
-    vs = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
-  }
-  return vs;
+  db.prepare(`INSERT OR IGNORE INTO vote_sessions (id,session_id,day,ip,ua_hash) VALUES (?,?,?,?,?)`)
+    .run(id, sessionId, day, fraud.hash(ip), fraud.hash(ua || ''));
+  return db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
 }
 function remainingVotes(vs) {
   const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
@@ -43,59 +39,61 @@ function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
   const chk = fraud.checkVote({ ip, sessionId, day });
   if (!chk.ok) return { error: chk.reason };
 
-  const vs = getOrCreateVoteSession(sessionId, ip, ua);
-  if (vs.suspended) return { error: 'suspended' };
-  const remaining = remainingVotes(vs);
-  if (remaining <= 0) return { error: 'no_votes_left', remaining: 0 };
-  if (count > remaining) count = remaining;
-
-  const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
-  const bonusCap = parseInt(getSetting('max_bonus_per_day') || '3', 10);
-
-  // Cihaz parmak izi ve bugüne ait harcama sayıları (free/bonus), TÜM oturumlar
-  // üzerinden. Satın alınan oylar cihaz limitine tabi değildir.
   const deviceHash = fraud.hash(String(ip) + '|' + String(ua || ''));
-  const deviceFreeUsed = db.prepare(
-    `SELECT COUNT(*) c FROM votes WHERE device_hash=? AND type='free' AND created_at >= ?`
-  ).get(deviceHash, day).c;
-  const deviceBonusUsed = db.prepare(
-    `SELECT COUNT(*) c FROM votes WHERE device_hash=? AND type='bonus' AND created_at >= ?`
-  ).get(deviceHash, day).c;
-
-  let freeToUse = Math.min(count,
-    Math.max(0, free - vs.free_used),          // oturum hakkı
-    Math.max(0, free - deviceFreeUsed));       // cihaz hakkı (rotasyon koruması)
-  let bonusToUse = Math.min(count - freeToUse,
-    Math.max(0, vs.bonus_earned - vs.bonus_used),
-    Math.max(0, bonusCap - deviceBonusUsed));  // bonus da cihaz başına sınırlı
-  let purchasedToUse = Math.min(count - freeToUse - bonusToUse,
-    Math.max(0, (vs.purchased || 0) - (vs.purchased_used || 0)));
-  const spendable = freeToUse + bonusToUse + purchasedToUse;
-  if (spendable <= 0) return { error: 'device_limit', remaining: 0 };
-  if (spendable < count) count = spendable;
-
   const oldRank = leader.rank;
-  const tx = db.transaction(() => {
+  const allocation = db.transaction(() => {
+    const vs = getOrCreateVoteSession(sessionId, ip, ua);
+    if (vs.suspended) return { error: 'suspended' };
+
+    let remaining = remainingVotes(vs);
+    if (remaining <= 0) return { error: 'no_votes_left', remaining: 0 };
+    const requested = Math.min(count, remaining);
+
+    const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
+    const bonusCap = parseInt(getSetting('max_bonus_per_day') || '3', 10);
+    const deviceFreeUsed = db.prepare(
+      `SELECT COUNT(*) c FROM votes WHERE device_hash=? AND type='free' AND created_at >= ?`
+    ).get(deviceHash, day).c;
+    const deviceBonusUsed = db.prepare(
+      `SELECT COUNT(*) c FROM votes WHERE device_hash=? AND type='bonus' AND created_at >= ?`
+    ).get(deviceHash, day).c;
+
+    let freeToUse = Math.min(requested,
+      Math.max(0, free - vs.free_used),
+      Math.max(0, free - deviceFreeUsed));
+    let bonusToUse = Math.min(requested - freeToUse,
+      Math.max(0, vs.bonus_earned - vs.bonus_used),
+      Math.max(0, bonusCap - deviceBonusUsed));
+    let purchasedToUse = Math.min(requested - freeToUse - bonusToUse,
+      Math.max(0, (vs.purchased || 0) - (vs.purchased_used || 0)));
+    const spendable = freeToUse + bonusToUse + purchasedToUse;
+    if (spendable <= 0) return { error: 'device_limit', remaining: 0 };
+
     const ins = db.prepare(`INSERT INTO votes (leader_id,session_id,type,source,country,ip_hash,device_hash) VALUES (?,?,?,?,?,?,?)`);
     for (let i = 0; i < freeToUse; i++) ins.run(leader.id, sessionId, 'free', source, leader.country_code, chk.ipHash, deviceHash);
     for (let i = 0; i < bonusToUse; i++) ins.run(leader.id, sessionId, 'bonus', source, leader.country_code, chk.ipHash, deviceHash);
     for (let i = 0; i < purchasedToUse; i++) ins.run(leader.id, sessionId, 'purchased', source, leader.country_code, chk.ipHash, deviceHash);
+
     db.prepare('UPDATE vote_sessions SET free_used=free_used+?, bonus_used=bonus_used+?, purchased_used=purchased_used+? WHERE id=?')
       .run(freeToUse, bonusToUse, purchasedToUse, vs.id);
-    db.prepare('UPDATE leaders SET total_votes=total_votes+? WHERE id=?').run(count, leader.id);
-    db.prepare('UPDATE countries SET total_votes=total_votes+? WHERE code=?').run(count, leader.country_code);
+    db.prepare('UPDATE leaders SET total_votes=total_votes+? WHERE id=?').run(spendable, leader.id);
+    db.prepare('UPDATE countries SET total_votes=total_votes+? WHERE code=?').run(spendable, leader.country_code);
     db.prepare(`INSERT INTO leader_daily_stats (leader_id,day,votes,shares) VALUES (?,?,?,0)
-                ON CONFLICT(leader_id,day) DO UPDATE SET votes=votes+excluded.votes`).run(leader.id, day, count);
-  });
-  tx();
-  fraud.recordVote(chk.ipHash, day, count);
+                ON CONFLICT(leader_id,day) DO UPDATE SET votes=votes+excluded.votes`).run(leader.id, day, spendable);
+
+    return { ok: true, count: spendable, vsId: vs.id };
+  })();
+
+  if (allocation.error) return allocation;
+  const countApplied = allocation.count;
+  fraud.recordVote(chk.ipHash, day, countApplied);
 
   const changes = recomputeRanks();
   const updated = db.prepare('SELECT rank,total_votes FROM leaders WHERE id=?').get(leader.id);
   logRankHistoryToday(leader.id, updated.rank, updated.total_votes);
 
-  pushActivity('vote', `${FLAG(leader.country_code)} Someone voted for ${leader.name} (+${count})`, leader.country_code, leader.id);
-  sse.broadcast('vote_created', { leaderId: leader.id, slug: leader.slug, count });
+  pushActivity('vote', `${FLAG(leader.country_code)} Someone voted for ${leader.name} (+${countApplied})`, leader.country_code, leader.id);
+  sse.broadcast('vote_created', { leaderId: leader.id, slug: leader.slug, count: countApplied });
   sse.broadcast('leader_vote_count_updated', { slug: leader.slug, totalVotes: updated.total_votes, rank: updated.rank });
   if (changes.length) {
     sse.broadcast('leader_rank_changed', { changes });
@@ -105,9 +103,9 @@ function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
     });
   }
 
-  const vs2 = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(vs.id);
+  const vs2 = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(allocation.vsId);
   return {
-    ok: true, leader: leader.slug, count,
+    ok: true, leader: leader.slug, count: countApplied,
     oldRank, newRank: updated.rank, totalVotes: updated.total_votes,
     remaining: remainingVotes(vs2),
     free_used: vs2.free_used, bonus_earned: vs2.bonus_earned, bonus_used: vs2.bonus_used,
@@ -181,7 +179,7 @@ function leaderboard({ limit = 10, offset = 0, category = null, country = null }
   if (country) { where += ' AND country_code=?'; args.push(country); }
   if (category && category !== 'all') {
     if (category === 'current' || category === 'historical') { where += ' AND status=?'; args.push(category); }
-    else { where += ` AND categories LIKE ?`; args.push(`%"${category}"%`); }
+    else { where += ` AND categories LIKE ?`; args.push(`%\"${category}\"%`); }
   }
   const rows = db.prepare(`SELECT ${leaderCols} FROM leaders WHERE ${where} ORDER BY total_votes DESC, id ASC LIMIT ? OFFSET ?`)
     .all(...args, limit, offset);
@@ -197,7 +195,7 @@ function decorate(r, globalTotal) {
   return {
     ...r, categories: JSON.parse(r.categories || '[]'),
     flag: FLAG(r.country_code),
-    countryName: (stmtCountryName.get(r.country_code) || {}).name, // API ve SSR aynı ülke adını versin
+    countryName: (stmtCountryName.get(r.country_code) || {}).name,
     pct: globalTotal ? +(100 * r.total_votes / globalTotal).toFixed(2) : 0,
     movement: (r.prev_rank && r.rank) ? r.prev_rank - r.rank : 0,
     spark
@@ -222,7 +220,7 @@ function leaderProfile(slug) {
     .get(r.country_code, r.total_votes).c;
   l.related = db.prepare(`SELECT slug,name,country_code,rank,total_votes FROM leaders
     WHERE visible=1 AND id != ? AND (country_code=? OR categories LIKE ?) ORDER BY total_votes DESC LIMIT 6`)
-    .all(r.id, r.country_code, `%"${JSON.parse(r.categories || '[]')[0] || 'x'}"%`)
+    .all(r.id, r.country_code, `%\"${JSON.parse(r.categories || '[]')[0] || 'x'}\"%`)
     .map(x => ({ ...x, flag: FLAG(x.country_code) }));
   return l;
 }
@@ -253,7 +251,6 @@ function globalStats() {
 function trending() {
   const globalTotal = db.prepare('SELECT COALESCE(SUM(total_votes),1) s FROM leaders WHERE visible=1').get().s;
   const dec = rows => rows.map(r => decorate(r, globalTotal));
-  const base = `SELECT ${leaderCols} FROM leaders WHERE visible=1`;
   const risers = db.prepare(`SELECT l.*, (h1.rank - l.rank) AS delta FROM leaders l
       JOIN leader_rank_history h1 ON h1.leader_id=l.id AND h1.day=?
       WHERE l.visible=1 AND (h1.rank - l.rank) > 0 ORDER BY delta DESC LIMIT 8`).all(dayStr(7));
