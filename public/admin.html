@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — Global Leaders Live</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .admin-shell { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+  .admin-side { background: var(--bg-2); border-right: 1px solid var(--panel-border); padding: 1rem 0.6rem; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  .admin-side h1 { font-size: 0.85rem; letter-spacing: 0.1em; padding: 0.5rem 0.8rem 1rem; }
+  .admin-side h1 em { font-style: normal; color: var(--accent); }
+  .admin-side button.navbtn { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--muted); font: inherit; font-size: 0.82rem; font-weight: 600; padding: 0.5rem 0.8rem; border-radius: 8px; cursor: pointer; }
+  .admin-side button.navbtn:hover, .admin-side button.navbtn.active { background: rgba(56,189,248,0.12); color: var(--text); }
+  .admin-main { padding: 1.5rem; min-width: 0; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.8rem; margin-bottom: 1.25rem; }
+  .kpi { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; padding: 0.9rem; }
+  .kpi b { display: block; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+  .kpi span { font-size: 0.65rem; letter-spacing: 0.12em; color: var(--muted); font-weight: 700; }
+  .demo-banner { background: rgba(245,181,36,0.1); border: 1px dashed rgba(245,181,36,0.5); color: var(--gold); border-radius: 10px; padding: 0.5rem 1rem; font-size: 0.78rem; font-weight: 700; margin-bottom: 1rem; text-align: center; }
+  .admin-main .table td, .admin-main .table th { font-size: 0.78rem; }
+  .rowbtns { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+  .login-box { max-width: 360px; margin: 14vh auto; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 800px) { .admin-shell { grid-template-columns: 1fr; } .admin-side { position: static; height: auto; display: flex; flex-wrap: wrap; } .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="modals"></div>
+<script src="/js/admin.js"></script>
+</body>
+</html>

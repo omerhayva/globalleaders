@@ -1,0 +1,439 @@
+import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useStore } from '../useStore.jsx';
+import { actions, getState } from '../store.js';
+import { api, esc, num } from '../api.js';
+
+// ============================================================================
+// Modal kabuğu — #modals kabına portal; backdrop tıkı ve ESC ile kapanır.
+// ============================================================================
+export function ModalHost() {
+  const st = useStore();
+  useEffect(() => {
+    if (!st.modal) return;
+    const h = e => { if (e.key === 'Escape') actions.closeModal(); };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [st.modal]);
+  const host = document.getElementById('modals');
+  if (!host || !st.modal) return null;
+  const M = MODALS[st.modal.type];
+  return createPortal(
+    <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) actions.closeModal(); }}>
+      <div className="modal" role="dialog" aria-modal="true">
+        <button className="close" aria-label="Close" onClick={() => actions.closeModal()}>×</button>
+        {M ? <M {...st.modal.props} /> : null}
+      </div>
+    </div>,
+    host
+  );
+}
+
+// ============================================================================
+// Ortak: VIP demo ödeme formu
+// ============================================================================
+function PayForm() {
+  return (
+    <div className="pay-form">
+      <div className="pay-head"><span className="pay-chip"></span><span className="pay-brand">VIP CHECKOUT</span>
+        <span className="pay-secure">🔒 Encrypted · DEMO</span></div>
+      <div className="field"><label>CARD NUMBER</label>
+        <input className="pf-num" inputMode="numeric" maxLength="19" defaultValue="4242 4242 4242 4242" /></div>
+      <div className="pay-row">
+        <div className="field"><label>EXPIRY</label><input className="pf-exp" maxLength="5" defaultValue="12/29" /></div>
+        <div className="field"><label>CVC</label><input className="pf-cvc" inputMode="numeric" maxLength="4" defaultValue="424" /></div>
+      </div>
+      <div className="field"><label>NAME ON CARD</label><input className="pf-name" maxLength="40" placeholder="NAME SURNAME" /></div>
+      <div className="pay-brands">VISA · MASTERCARD · TROY <span className="demo-tag">DEMO — no real charge</span></div>
+    </div>
+  );
+}
+
+function readPayForm(root, toast) {
+  const cardNum = (root.querySelector('.pf-num')?.value || '').replace(/\D/g, '');
+  const exp = (root.querySelector('.pf-exp')?.value || '').trim();
+  const cvc = (root.querySelector('.pf-cvc')?.value || '').replace(/\D/g, '');
+  if (cardNum.length < 12) { toast('Enter a card number (demo: any digits work)', 'error'); return null; }
+  if (!/^\d{2}\/\d{2}$/.test(exp)) { toast('Expiry must look like 12/29', 'error'); return null; }
+  if (cvc.length < 3) { toast('Enter the 3-digit CVC', 'error'); return null; }
+  return { method: 'card', card_last4: cardNum.slice(-4), demo: true };
+}
+
+// ============================================================================
+// OY modalı (adet seçici + ekonomi + duygusal geri bildirim)
+// ============================================================================
+const VOTE_ERR = {
+  no_votes_left: 'You used your free vote today. Share for +1 or buy a pack!',
+  too_fast: 'Whoa — slow down a little ⏱',
+  daily_cap: 'Daily voting limit reached for your network.',
+  device_limit: 'Daily free-vote limit reached for this device. Share for +1 or buy a pack!',
+  suspended: 'Voting temporarily suspended for suspicious activity.',
+  captcha_required: 'Too much activity — please try again later.',
+  rate_limited: 'Too many requests — please slow down.'
+};
+
+function emotionalToast(leader, r) {
+  if (r.oldRank && r.newRank < r.oldRank)
+    actions.toast(`🔥 Your vote moved <b>${esc(leader.name)}</b> from #${r.oldRank} → <b>#${r.newRank}</b>!`, 'epic', 5200);
+  else if (r.newRank === 1)
+    actions.toast(`👑 <b>${esc(leader.name)}</b> is holding <b>#1</b> — powered by your vote!`, 'epic', 5000);
+  else
+    actions.toast(`✅ +${r.count} for <b>${esc(leader.name)}</b> · now ${num(r.totalVotes)} votes at #${r.newRank}. ${r.remaining > 0 ? `You have ${r.remaining} vote${r.remaining > 1 ? 's' : ''} left.` : 'Out of votes — share for +1 or grab a pack!'}`, 'success', 5000);
+}
+
+function OutOfVotesBody({ slug }) {
+  return <>
+    <h3>You're out of votes 😱</h3>
+    <p className="muted small">You get <b>1 free vote per day</b>. Get more right now:</p>
+    <div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}>
+      <button className="pack" onClick={() => actions.openModal('share', { slug, wantBonus: true })}>
+        <b>🎁 +1 VOTE</b><span>Share a leader (max 3/day)</span><span className="price">FREE</span></button>
+      <button className="pack" onClick={() => actions.openModal('buyvotes')}>
+        <b>⚡ VOTE PACKS</b><span>10 votes or 60 votes, instantly</span><span className="price">from $1</span></button>
+    </div>
+  </>;
+}
+
+export function VoteModal({ slug }) {
+  const st = useStore();
+  const [leader, setLeader] = useState(null);
+  const [n, setN] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    api('/api/leader/' + slug).then(setLeader)
+      .catch(() => { actions.toast('Leader not found', 'error'); actions.closeModal(); });
+  }, [slug]);
+
+  if (!leader) return <p className="muted small center">Loading…</p>;
+  const max = Math.max(0, st.session.remaining ?? 1);
+  if (max === 0) return <OutOfVotesBody slug={slug} />;
+
+  const go = async () => {
+    setBusy(true);
+    try {
+      const r = await api('/api/vote', { method: 'POST', body: { slug, count: n } });
+      actions.setSession(r);
+      api('/api/my-votes').then(actions.setMyVotes).catch(() => { });
+      actions.closeModal();
+      actions.confetti();
+      emotionalToast(leader, r);
+      actions.flashLeader(slug);
+      setTimeout(() => actions.openModal('share', { slug, wantBonus: st.session.remaining === 0, afterVote: true }), 1600);
+    } catch (err) {
+      actions.closeModal();
+      actions.toast(VOTE_ERR[err.error] || 'Vote failed. Try again.', 'error');
+      if (err.error === 'no_votes_left') actions.openModal('vote', { slug });
+    }
+  };
+
+  return (
+    <div ref={rootRef}>
+      <h3>Vote for {leader.flag} {leader.name}</h3>
+      <p className="muted small">#{leader.rank} · {num(leader.total_votes)} votes · You have {max} vote{max > 1 ? 's' : ''} available</p>
+      <div className="lb-power" aria-hidden="true"><i style={{ '--w': Math.max(5, leader.pct) + '%' }}></i></div>
+      <p className="muted small center" style={{ margin: '.2rem 0 .6rem' }}>{leader.pct}% of all community votes</p>
+      {max > 1
+        ? <div className="vote-spinner">
+          <button aria-label="Fewer votes" onClick={() => setN(v => Math.max(1, v - 1))}>−</button>
+          <span className="vote-count">{n}</span>
+          <button aria-label="More votes" onClick={() => setN(v => Math.min(max, v + 1))}>+</button>
+        </div>
+        : <div style={{ height: '0.8rem' }}></div>}
+      <button className="btn btn-vote big" style={{ width: '100%' }} disabled={busy} onClick={go}>
+        CAST {n} VOTE{n > 1 ? 'S' : ''}</button>
+      <p className="muted small center" style={{ marginTop: '.6rem' }}>1 free vote per day · earn more by sharing (+1) or{' '}
+        <button className="x-link" style={{ background: 'none', border: 'none', cursor: 'pointer', font: 'inherit' }}
+          onClick={() => actions.openModal('buyvotes')}>buy vote packs</button></p>
+    </div>
+  );
+}
+
+// ============================================================================
+// OY PAKETİ satın alma
+// ============================================================================
+export function BuyVotesModal() {
+  const [pack, setPack] = useState('votes-10');
+  const [busy, setBusy] = useState(false);
+  const rootRef = useRef(null);
+  const go = async () => {
+    const card = readPayForm(rootRef.current, actions.toast);
+    if (!card) return;
+    setBusy(true);
+    try {
+      const intent = await api('/api/purchase/intent', { method: 'POST', body: { kind: 'votes', reference: pack } });
+      const r = await api('/api/purchase/confirm', { method: 'POST', body: { intentId: intent.intentId, details: card } });
+      const st0 = getState();
+      actions.setSession({ remaining: r.remaining, purchased: (st0.session.purchased || 0) + r.votesAdded });
+      actions.closeModal();
+      actions.toast(`⚡ <b>+${r.votesAdded} votes</b> added! You now have ${r.remaining} votes. Go move the ranking!`, 'epic', 5500);
+    } catch (e) {
+      actions.toast(e.error || 'Purchase failed', 'error');
+      setBusy(false);
+    }
+  };
+  return (
+    <div ref={rootRef}>
+      <h3>⚡ Buy vote packs</h3>
+      <p className="muted small">Votes are credited instantly to this device and never expire.</p>
+      <div className="pack-grid">
+        <button className={'pack' + (pack === 'votes-10' ? ' sel' : '')} onClick={() => setPack('votes-10')}>
+          <b>10</b><span>VOTES</span><span className="price">$1.00</span></button>
+        <button className={'pack' + (pack === 'votes-60' ? ' sel' : '')} onClick={() => setPack('votes-60')}>
+          <b>60</b><span>VOTES</span><span className="price">$5.00</span></button>
+      </div>
+      <div className="demo-note">DEMO MODE — purchases are simulated. No real charge occurs.</div>
+      <PayForm />
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={go}>
+        {pack === 'votes-10' ? 'BUY 10 VOTES · $1.00' : 'BUY 60 VOTES · $5.00'}</button>
+    </div>
+  );
+}
+
+// ============================================================================
+// PAYLAŞIM modalı (+1 bonus akışı)
+// ============================================================================
+export function ShareModal({ slug, wantBonus = false, afterVote = false }) {
+  const [leader, setLeader] = useState(null);
+  useEffect(() => { api('/api/leader/' + slug).then(setLeader).catch(() => actions.closeModal()); }, [slug]);
+  if (!leader) return <p className="muted small center">Loading…</p>;
+
+  const text = `${leader.flag} ${leader.name} is currently #${leader.rank} in Global Leaders Live with ${num(leader.total_votes)} votes. Do you agree? Vote now.`;
+  const platforms = [
+    ['whatsapp', '💬', 'WhatsApp', u => `https://wa.me/?text=${encodeURIComponent(text + ' ' + u)}`],
+    ['x', '𝕏', 'X', u => `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(u)}`],
+    ['facebook', '📘', 'Facebook', u => `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(u)}`],
+    ['telegram', '✈️', 'Telegram', u => `https://t.me/share/url?url=${encodeURIComponent(u)}&text=${encodeURIComponent(text)}`],
+    ['reddit', '🤖', 'Reddit', u => `https://www.reddit.com/submit?url=${encodeURIComponent(u)}&title=${encodeURIComponent(text)}`],
+    ['copy', '🔗', 'Copy Link', null]
+  ];
+
+  const doShare = async platform => {
+    try {
+      const r = await api('/api/share', { method: 'POST', body: { slug, platform } });
+      const url = location.origin + r.shareUrl;
+      if (platform === 'copy') { await navigator.clipboard.writeText(text + ' ' + url).catch(() => { }); actions.toast('🔗 Link copied!', 'success'); }
+      else if (platform === 'native' && navigator.share) navigator.share({ title: 'Global Leaders Live', text, url }).catch(() => { });
+      else { const p = platforms.find(x => x[0] === platform); if (p && p[3]) window.open(p[3](url), '_blank', 'noopener,width=640,height=560'); }
+      if (r.bonusAwarded) {
+        actions.setSession(r);
+        setTimeout(() => actions.toast('🎁 <b>+1 BONUS VOTE</b> earned for sharing!', 'epic'), 700);
+      } else setTimeout(() => actions.toast('Thanks for sharing! (Daily bonus limit reached)', ''), 700);
+      actions.closeModal();
+    } catch { actions.toast('Share failed, try again', 'error'); }
+  };
+
+  return (
+    <div>
+      {afterVote || wantBonus
+        ? <><h3>Want 1 MORE vote? 🎁</h3><p className="muted small">Share {leader.name} and get <b>+1 bonus vote</b> instantly (max 3/day).</p></>
+        : <><h3>Share {leader.name}</h3><p className="muted small">Every share can earn you +1 bonus vote.</p></>}
+      <div className="terms-box" style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '1.6rem' }}>{leader.flag}</div>
+        <b>{leader.name}</b> · #{leader.rank} · {num(leader.total_votes)} votes<br />
+        <span className="muted">"Do you agree? Vote now."</span>
+      </div>
+      <div className="share-grid">
+        {platforms.map(([id, ico, label]) =>
+          <button key={id} className="share-btn" onClick={() => doShare(id)}><span className="ico">{ico}</span>{label}</button>)}
+      </div>
+      {navigator.share
+        ? <button className="btn btn-ghost" style={{ width: '100%' }} onClick={() => doShare('native')}>📲 More share options…</button>
+        : null}
+    </div>
+  );
+}
+
+// ============================================================================
+// REKLAM / MARŞ koltuğu satın alma (şeffaf koşullar + VIP ödeme formu)
+// ============================================================================
+export function CheckoutModal({ kind, reference }) {
+  const [intent, setIntent] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    api('/api/purchase/intent', { method: 'POST', body: { kind, reference } })
+      .then(setIntent)
+      .catch(e => { actions.toast(e.error || 'Could not start purchase', 'error'); actions.closeModal(); });
+  }, [kind, reference]);
+
+  if (!intent) return <p className="muted small center">Preparing checkout…</p>;
+  const t = intent.terms;
+
+  const go = async () => {
+    const card = readPayForm(rootRef.current, actions.toast);
+    if (!card) return;
+    let details;
+    if (kind === 'ad') {
+      const name = rootRef.current.querySelector('#adName').value.trim();
+      if (!name) return actions.toast('Advertiser name is required', 'error');
+      details = {
+        advertiser: name,
+        x_handle: rootRef.current.querySelector('#adX').value,
+        text: rootRef.current.querySelector('#adText').value,
+        cta: rootRef.current.querySelector('#adCta').value,
+        url: rootRef.current.querySelector('#adUrl').value
+      };
+      const f = rootRef.current.querySelector('#adImg').files[0];
+      if (f) {
+        if (f.size > 2 * 1024 * 1024) return actions.toast('Image too large (max 2MB)', 'error');
+        details.image = await new Promise(res => {
+          const rd = new FileReader();
+          rd.onload = () => res(rd.result);
+          rd.readAsDataURL(f);
+        });
+      }
+    } else {
+      const sponsor = rootRef.current.querySelector('#anName').value.trim();
+      if (!sponsor) return actions.toast('Sponsor name is required', 'error');
+      details = { sponsor, x_handle: rootRef.current.querySelector('#anX').value };
+    }
+    Object.assign(details, { payment: card });
+    setBusy(true);
+    try {
+      const r = await api('/api/purchase/confirm', { method: 'POST', body: { intentId: intent.intentId, details } });
+      actions.closeModal();
+      actions.toast(`🏆 <b>Purchase complete!</b> ${esc(r.shareText || '')}`, 'epic', 6000);
+      if (r.shareText && navigator.clipboard) navigator.clipboard.writeText(r.shareText + ' ' + location.origin).catch(() => { });
+      setTimeout(() => location.reload(), 2200);
+    } catch (e) {
+      actions.toast(e.error || 'Payment failed', 'error');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div ref={rootRef}>
+      <h3>{kind === 'ad' ? '📢 Take over this ad space' : '🎵 Take over this anthem'}</h3>
+      {intent.demoMode ? <div className="demo-note">DEMO MODE — all purchases are simulated. No real charge occurs.</div> : null}
+      <div className="terms-box">
+        <b>Item:</b> {t.item}<br />
+        <b>Price:</b> {intent.priceDisplay}<br />
+        <b>Ownership:</b> {t.duration}<br />
+        <b>You receive:</b> {t.receives}<br />
+        <b>Refunds:</b> {t.refunds}
+      </div>
+      {kind === 'ad' ? <>
+        <div className="field"><label>COMPANY / ADVERTISER NAME *</label><input id="adName" maxLength="60" placeholder="Acme Inc." /></div>
+        <div className="field"><label>𝕏 (TWITTER) HANDLE — shown publicly, links to your profile</label><input id="adX" maxLength="16" placeholder="@acme" /></div>
+        <div className="field"><label>SHORT TEXT</label><input id="adText" maxLength="120" placeholder="The best rockets in the galaxy 🚀" /></div>
+        <div className="field"><label>CTA BUTTON</label><input id="adCta" maxLength="30" placeholder="Learn more" /></div>
+        <div className="field"><label>DESTINATION URL</label><input id="adUrl" type="url" placeholder="https://example.com" /></div>
+        <div className="field"><label>IMAGE (JPG/PNG/WEBP, max 2MB — optional)</label><input id="adImg" type="file" accept="image/png,image/jpeg,image/webp" /></div>
+      </> : <>
+        <div className="field"><label>YOUR NAME OR COMPANY (shown as sponsor) *</label><input id="anName" maxLength="60" placeholder="John Doe" /></div>
+        <div className="field"><label>𝕏 (TWITTER) HANDLE — shown publicly so everyone knows it's you</label><input id="anX" maxLength="16" placeholder="@johndoe" /></div>
+      </>}
+      <PayForm />
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy}
+        onClick={go}>{busy ? 'Processing…' : 'CONFIRM PURCHASE · $5.00'}</button>
+      {err ? <p className="muted small">{err}</p> : null}
+    </div>
+  );
+}
+
+// ============================================================================
+// OYLARIM
+// ============================================================================
+export function MyVotesModal() {
+  const st = useStore();
+  const total = (st.session.freePerDay || 0) + (st.session.bonus_earned || 0) + (st.session.purchased || 0);
+  const mv = st.myVotes || [];
+  return (
+    <div>
+      <h3>🗳 My votes</h3>
+      <p className="muted small">Remaining today: <b>{st.session.remaining ?? '…'}/{total}</b> · Free {st.session.freePerDay}/day · Bonus earned {st.session.bonus_earned || 0} · Purchased {st.session.purchased || 0}</p>
+      <div className="myvotes-list">
+        {mv.length
+          ? mv.map(v => (
+            <a className="trend-row" key={v.slug} href={`/leader/${encodeURIComponent(v.slug)}`}>
+              <span>{v.flag} {v.name}</span><b>×{v.n} · #{v.rank}</b>
+            </a>))
+          : <p className="muted small">You haven't voted yet. Your 1 free daily vote is waiting!</p>}
+      </div>
+      <div className="hero-cta">
+        <button className="btn btn-gold" onClick={() => actions.openModal('buyvotes')}>⚡ BUY MORE VOTES</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// GİRİŞ (isim/soyisim veya simüle sosyal)
+// ============================================================================
+export function SignInModal({ afterMsg }) {
+  const [provider, setProvider] = useState('local');
+  const [busy, setBusy] = useState(false);
+  const nameRef = useRef(null), emailRef = useRef(null), xRef = useRef(null);
+  const go = async () => {
+    const name = (nameRef.current?.value || '').trim();
+    if (name.length < 2) return actions.toast('Please enter your name', 'error');
+    setBusy(true);
+    try {
+      const r = await api('/api/auth/login', {
+        method: 'POST',
+        body: { name, email: emailRef.current?.value, provider, x_handle: provider === 'x' ? xRef.current?.value : '' }
+      });
+      actions.setMe(r.user);
+      actions.closeModal();
+      actions.toast(`👑 <b>Welcome, ${esc(r.user.name)}!</b> Your votes are now saved to your account${r.user.x_handle ? ' (@' + esc(r.user.x_handle) + ')' : ''}.`, 'epic', 5500);
+      api('/api/my-votes').then(actions.setMyVotes).catch(() => { });
+      api('/api/session').then(actions.setSession).catch(() => { });
+    } catch (e) {
+      actions.toast(e.error === 'invalid_email' ? 'That email looks wrong' : (e.error || 'Sign-in failed'), 'error');
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <h3>👑 Join the arena</h3>
+      <p className="muted small">{afterMsg || 'Sign in so your votes and purchases follow you on every device.'}</p>
+      <div className="social-row">
+        <button className={'btn-social' + (provider === 'x' ? ' sel' : '')} onClick={() => { setProvider('x'); actions.toast('Demo 𝕏 sign-in: enter your name (and handle if you like)', '', 3500); }}>𝕏 &nbsp;Continue with X</button>
+        <button className={'btn-social' + (provider === 'google' ? ' sel' : '')} onClick={() => { setProvider('google'); actions.toast('Demo Google sign-in: just enter your name', '', 3500); }}><b style={{ color: '#4285F4' }}>G</b>&nbsp;Continue with Google</button>
+      </div>
+      <div className="or-line"><span>or with your name</span></div>
+      <div className="field"><label>NAME SURNAME *</label><input ref={nameRef} maxLength="60" placeholder="Mehmet Yılmaz" autoFocus /></div>
+      {provider === 'x' ? <div className="field"><label>𝕏 HANDLE</label><input ref={xRef} maxLength="16" placeholder="@mehmet" /></div> : null}
+      <div className="field"><label>EMAIL — optional, reconnects your account anywhere</label><input ref={emailRef} type="email" maxLength="120" placeholder="you@mail.com" /></div>
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={go}>SIGN IN</button>
+      <p className="muted small">Demo mode: social sign-in is simulated — no external account is accessed. No password needed.</p>
+    </div>
+  );
+}
+
+// ============================================================================
+// HESAP paneli
+// ============================================================================
+export function AccountModal() {
+  const st = useStore();
+  const me = st.me;
+  if (!me) return null;
+  const out = async () => {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch { }
+    actions.setMe(null);
+    actions.closeModal();
+    actions.toast('Signed out. Your votes stay linked to your account.', '', 4000);
+  };
+  return (
+    <div>
+      <h3><span className="avatar big" style={{ background: me.color }}>{me.initials}</span> {me.name}</h3>
+      <p className="muted small">
+        {me.provider === 'local' ? 'Signed in with name' : 'Signed in via ' + (me.provider === 'x' ? '𝕏' : me.provider)}
+        {me.x_handle ? <> · <a href={`https://x.com/${me.x_handle}`} target="_blank" rel="noopener">@{me.x_handle}</a></> : null}
+      </p>
+      <div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}>
+        <button className="pack" onClick={() => actions.openModal('myvotes')}><b>🗳 MY VOTES</b><span>Every leader you've supported</span></button>
+        <button className="pack" onClick={out}><b>🚪 SIGN OUT</b><span>This device only — your account stays safe</span></button>
+      </div>
+    </div>
+  );
+}
+
+const MODALS = {
+  vote: VoteModal, buyvotes: BuyVotesModal, share: ShareModal,
+  checkout: CheckoutModal, myvotes: MyVotesModal, signin: SignInModal, account: AccountModal
+};

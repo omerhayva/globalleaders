@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "npm: kurulum (install)",
+      "type": "npm",
+      "script": "install",
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: sunucu (start)",
+      "detail": "node server/index.js → http://localhost:3000",
+      "type": "npm",
+      "script": "start",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: sunucu canlı (dev — dosya değişince otomatik yeniden başlar)",
+      "type": "npm",
+      "script": "dev",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: React derle (build:react)",
+      "group": { "kind": "build", "isDefault": true },
+      "type": "npm",
+      "script": "build:react",
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: React izle (watch:react)",
+      "detail": "client/** değiştikçe react-app.js yeniden derlenir",
+      "type": "npm",
+      "script": "watch:react",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: test (React adacık entegrasyon)",
+      "group": { "kind": "test", "isDefault": true },
+      "type": "npm",
+      "script": "test:react",
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: demo verilerini sıfırla (db:reset)",
+      "type": "npm",
+      "script": "db:reset",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+import { useEffect, useRef, useState } from 'react';
+import { useStore } from '../useStore.jsx';
+import { api, num, FLAG } from '../api.js';
+import { useRoll } from '../hooks.js';
+
+function FlagImg({ cc, size = 20 }) {
+  return <img className="flag" src={`/flags/w${size <= 40 ? 40 : 160}/${cc.toLowerCase()}.png`}
+    alt={`${cc} flag`} width={size / 2} loading="lazy"
+    onError={e => { try { e.currentTarget.replaceWith(document.createTextNode(FLAG(cc))); } catch { } }} />;
+}
+
+function Movement({ m }) {
+  if (m > 0) return <span className="mv up" aria-label={`Up ${m} places`}>↑{m}</span>;
+  if (m < 0) return <span className="mv down" aria-label={`Down ${-m} places`}>↓{-m}</span>;
+  return <span className="mv same" aria-label="No change">—</span>;
+}
+
+function Sparkline({ values, w = 90, h = 26 }) {
+  if (!values || !values.length) return null;
+  const max = Math.max(...values, 1);
+  const pts = values.map((v, i) =>
+    `${(i / Math.max(1, values.length - 1) * w).toFixed(1)},${(h - 2 - (v / max) * (h - 6)).toFixed(1)}`).join(' ');
+  return <svg className="spark" viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-label="7 day vote trend">
+    <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" />
+  </svg>;
+}
+
+function Row({ l, i, voted, flash, rankCls, barPct }) {
+  const shown = useRoll(l.total_votes);
+  return (
+    <div className={`lb-row${flash ? ' flash' : ''}${rankCls ? ' ' + rankCls : ''}`}
+      data-slug={l.slug} data-rank={l.rank} style={{ '--i': i }}>
+      <div className="lb-rank">
+        <span className={`rank-num${l.rank <= 3 ? ' medal m' + l.rank : ''}`}>
+          {l.rank === 1 ? <span className="crown" aria-hidden="true">👑</span> : null}{l.rank}
+        </span>
+        <Movement m={l.movement} />
+      </div>
+      {l.portrait
+        ? <img className="portrait" src={l.portrait} alt={`Portrait of ${l.name}`} width="56" height="56" loading="lazy" />
+        : <img className="portrait" src={`/portrait/${l.slug}.svg`} alt={`Portrait of ${l.name}`} width="56" height="56" loading="lazy" />}
+      <div className="lb-info">
+        <a className="lb-name" href={`/leader/${l.slug}`}>{l.name} {l.verified
+          ? <span className="verified" title="Verified profile">✓</span>
+          : (l.community ? <span className="tag new" title="Added by the community">COMMUNITY</span> : null)}
+          {voted ? <span className="voted-chip">✓ YOUR VOTE</span> : null}
+        </a>
+        <span className="lb-country"><FlagImg cc={l.country_code} size={20} /> {l.countryName || l.country_code} · {l.title || ''}</span>
+      </div>
+      <div className="lb-votes"><span className="votes-num" data-votes>{num(shown)}</span>
+        <span className="votes-label">votes · {l.pct}%</span></div>
+      <Sparkline values={l.spark} />
+      <div className="lb-actions">
+        <button className="btn btn-vote" data-vote={l.slug} aria-label={`Vote for ${l.name}`}>+ VOTE</button>
+        <button className="btn btn-ghost" data-share={l.slug} aria-label={`Share ${l.name}`}>SHARE&nbsp;+1</button>
+      </div>
+      <div className="lb-power" aria-hidden="true"><i style={{ '--w': barPct + '%' }}></i></div>
+    </div>
+  );
+}
+
+// Liderlik tablosu adacığı: SSR satırlarının yerini alır.
+// Mount, veri hazır olduktan SONRA yapılır (bkz. index.jsx) — böylece SSR
+// içerik fetch bitene kadar görünür kalır, hata olursa aynen durur.
+// SSE güncellemeleri app.js'in gönderdiği 'gl:sse' CustomEvent'lerinden gelir.
+export function Leaderboard({ initialRows, qs }) {
+  const st = useStore();
+  const [rows, setRows] = useState(initialRows);
+  const [flashSlug, setFlashSlug] = useState(null);
+  const [rankCls, setRankCls] = useState({});   // slug -> 'rank-up' | 'rank-down'
+  const rowsRef = useRef(initialRows);
+
+  useEffect(() => {
+    const onSse = e => {
+      const { event, data } = e.detail || {};
+      if (event === 'leader_vote_count_updated') {
+        setRows(prev => prev && prev.map(r => r.slug === data.slug
+          ? { ...r, totalVotes: data.totalVotes, total_votes: data.totalVotes, rank: data.rank || r.rank } : r));
+        setFlashSlug(data.slug);
+        setTimeout(() => setFlashSlug(null), 1400);
+      } else if (event === 'leader_rank_changed') {
+        api(`/api/leaderboard?${qs}`).then(r => {
+          const prev = rowsRef.current || [];
+          const cls = {};
+          r.rows.forEach(nr => {
+            const old = prev.find(p => p.slug === nr.slug);
+            if (old && old.rank !== nr.rank) cls[nr.slug] = nr.rank < old.rank ? 'rank-up' : 'rank-down';
+          });
+          rowsRef.current = r.rows;
+          setRows(r.rows);
+          setRankCls(cls);
+          setTimeout(() => setRankCls({}), 1100);
+        }).catch(() => { });
+      }
+    };
+    document.addEventListener('gl:sse', onSse);
+    return () => document.removeEventListener('gl:sse', onSse);
+  }, [qs]);
+
+  const voted = new Set((st.myVotes || []).map(v => v.slug));
+  const maxVotes = Math.max(...rows.map(r => r.total_votes || 0), 1);
+  return <>{rows.map((l, i) => {
+    const barPct = Math.max(5, Math.round((l.total_votes || 0) / maxVotes * 100));
+    return <Row key={l.slug} l={l} i={i} voted={voted.has(l.slug)} barPct={barPct}
+      flash={flashSlug === l.slug} rankCls={rankCls[l.slug]} />;
+  })}</>;
+}

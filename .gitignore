@@ -1,0 +1,24 @@
+# Bağımlılıklar
+node_modules/
+
+# Ortam / gizli anahtarlar
+.env
+.env.local
+
+# Veritabanı (ilk açılışta otomatik seed edilir — bkz. README)
+var/*.db
+var/*.db-shm
+var/*.db-wal
+
+# Kullanıcı yüklemeleri (reklam görselleri vb.)
+public/uploads/*
+!public/uploads/.gitkeep
+
+# Derleme çıktısı (npm run build:react ile yeniden üretilir)
+# Not: public/js/react-app.js bilinçli olarak takip edilir — derleme olmadan da çalışsın diye.
+
+# Sistem / editör
+.DS_Store
+Thumbs.db
+npm-debug.log*
+*.code-workspace

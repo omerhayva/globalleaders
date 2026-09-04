@@ -1,0 +1,87 @@
+### Global Leaders Live — API koleksiyonu
+### VS Code "REST Client" eklentisiyle kullanın (önerilir, açılışta sorulur).
+### Her isteğin üzerindeki "Send Request" bağlantısına tıklayın.
+
+@host = http://localhost:3000
+@admin = http://localhost:3000/api/admin
+
+### ── Sayfalar ──────────────────────────────────────────────
+
+# Ana sayfa (SSR + React adacıkları)
+GET {{host}}/
+
+### ── Genel API ─────────────────────────────────────────────
+
+# Oturum (oy bakiyesi)
+GET {{host}}/api/session
+
+# İstatistikler (halka adacığının verisi)
+GET {{host}}/api/stats
+
+# Liderlik tablosu (ilk 10)
+GET {{host}}/api/leaderboard?limit=10
+
+# Ülke bazlı tablo
+GET {{host}}/api/leaderboard?limit=10&country=tr
+
+# Lider detayı
+GET {{host}}/api/leader/nelson-mandela
+
+# Ülkeler (harita verisi)
+GET {{host}}/api/countries
+
+### ── Etkileşim akışları ────────────────────────────────────
+
+# Oy ver
+POST {{host}}/api/vote
+Content-Type: application/json
+
+{"slug": "nelson-mandela", "count": 1}
+
+# Paylaş (+1 bonus oy; platform: whatsapp/x/facebook/telegram/reddit/copy)
+POST {{host}}/api/share
+Content-Type: application/json
+
+{"slug": "nelson-mandela", "platform": "copy"}
+
+# Oylarım
+GET {{host}}/api/my-votes
+
+### ── Hesap ────────────────────────────────────────────────
+
+# Giriş (demo: sosyal giriş simüle edilir)
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{"name": "Test Kullanıcı", "email": "test@example.com", "provider": "local"}
+
+# Ben kimim?
+GET {{host}}/api/auth/me
+
+# Çıkış
+POST {{host}}/api/auth/logout
+
+### ── Satın alma (DEMO ödeme) ───────────────────────────────
+
+# 1) Niyet oluştur — kind: votes|ad|anthem
+POST {{host}}/api/purchase/intent
+Content-Type: application/json
+
+{"kind": "votes", "reference": "votes-10"}
+
+# 2) Onayla (intentId'yi yukarıdaki yanıttan kopyalayın)
+POST {{host}}/api/purchase/confirm
+Content-Type: application/json
+
+{"intentId": "mock_xxxxxxxxxxxxxxxx", "details": {"payment": {"method": "card", "card_last4": "4242", "demo": true}}}
+
+### ── Admin (parola: leaders2026) ──────────────────────────
+
+# Giriş → yanıtın Set-Cookie başlığındaki belirteç ile sonraki istekler yapılır
+POST {{admin}}/login
+Content-Type: application/json
+
+{"password": "leaders2026"}
+
+# Panel sayfası
+GET {{host}}/admin
