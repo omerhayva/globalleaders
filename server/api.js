@@ -61,9 +61,9 @@ router.post('/purchase/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name
   const { kind, reference, advertiser } = req.body || {}; if (!['ad', 'anthem', 'votes'].includes(kind)) return res.status(400).json({ error: 'bad_kind' });
   if (kind === 'ad' && !db.prepare('SELECT 1 FROM advertising_slots WHERE id=? AND active=1').get(reference)) return res.status(404).json({ error: 'slot_not_found' }); if (kind === 'anthem' && !db.prepare('SELECT 1 FROM countries WHERE code=?').get(String(reference || '').toUpperCase())) return res.status(404).json({ error: 'country_not_found' }); if (kind === 'votes' && !VOTE_PACKS[reference]) return res.status(400).json({ error: 'pack_not_found' });
   const amountUsd = kind === 'votes' ? VOTE_PACKS[reference].usd : 5; const ccy = currency.guessCurrency(req.headers['accept-language']); let intent;
-  try { intent = payments.createIntent({ sessionId: req.sessionId, kind, reference, advertiser: cleanText(advertiser, 60), amountUsd }); } catch (e) { if (e && e.message === 'crypto_wallet_not_configured') return res.status(503).json({ error: 'crypto_wallet_not_configured', message: 'Crypto checkout is not configured yet.' }); throw e; }
+  try { intent = payments.createIntent({ sessionId: req.sessionId, kind, reference, advertiser: cleanText(advertiser, 60), amountUsd }); } catch (e) { if (e && e.message === 'crypto_wallet_not_configured') return res.status(503).json({ error: 'crypto_wallet_not_configured', message: 'Crypto checkout is not configured yet.' }); if (e && e.message === 'unsupported_crypto_asset') return res.status(503).json({ error: 'unsupported_crypto_asset', message: 'Only USDT is supported by the initial crypto checkout.' }); throw e; }
   const termsMap = { ad: { item: `Advertising slot: ${reference}`, duration: 'Slot ownership follows the published slot terms.', receives: 'Sponsored placement on Global Leaders Live.' }, anthem: { item: `National anthem sponsorship: ${reference}`, duration: 'Ownership lasts until another buyer takes over the same slot.', receives: 'Sponsored-by credit on the country and anthem pages.' }, votes: { item: `Vote pack: ${VOTE_PACKS[reference] ? VOTE_PACKS[reference].votes : ''} votes`, duration: 'Votes are credited to your session instantly and never expire.', receives: `${VOTE_PACKS[reference] ? VOTE_PACKS[reference].votes : ''} extra votes.` } };
-  res.json({ ...intent, amountUsd, priceDisplay: currency.display(amountUsd, ccy), terms: { ...termsMap[kind], price: `$${amountUsd.toFixed(2)} USD`, refunds: 'Refunds follow the applicable Payment Terms.' }, demoMode: false });
+  res.json({ ...intent, amountUsd, priceDisplay: currency.display(amountUsd, ccy), terms: { ...termsMap[kind], price: `$${amountUsd.toFixed(2)} USD`, crypto: `${intent.cryptoAmountDisplay}`, refunds: 'Refunds follow the applicable Payment Terms.' }, demoMode: false });
 });
 
 router.post('/purchase/confirm', rateLimit({ windowMs: 10 * 60_000, max: 15, name: 'purchase-confirm' }), (req, res) => {
@@ -71,7 +71,7 @@ router.post('/purchase/confirm', rateLimit({ windowMs: 10 * 60_000, max: 15, nam
   const { intentId, details } = req.body || {}; const pending = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(String(intentId || '')); if (!pending) return res.status(404).json({ error: 'unknown_intent' });
   if (pending.session_id && pending.session_id !== req.sessionId) { fraud.logFraud('intent_takeover', req.sessionId, null, String(intentId || '')); return res.status(403).json({ error: 'wrong_session' }); }
   if (pending.provider !== payments.active) return res.status(400).json({ error: 'provider_mismatch' });
-  const conf = payments.confirm(String(intentId || ''), (details && details.payment) || details || {});
+  const conf = payments.confirm(String(intentId || ''), details || {});
   if (conf.status === 'pending_verification') return res.status(202).json({ ok: true, status: 'pending_verification', paymentId: conf.payment.id });
   if (conf.status !== 'succeeded') return res.status(402).json({ error: conf.error || 'payment_failed' });
   const p = conf.payment; if (conf.idempotent) return res.json({ ok: true, idempotent: true });
