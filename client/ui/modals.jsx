@@ -100,8 +100,82 @@ export function CheckoutModal({ kind, reference }) {
 
 export function MyVotesModal() { const st = useStore(); const total = (st.session.freePerDay || 0) + (st.session.bonus_earned || 0) + (st.session.purchased || 0); const mv = st.myVotes || []; return <div><h3>🗳 My votes</h3><p className="muted small">Remaining today: <b>{st.session.remaining ?? '…'}/{total}</b> · Free {st.session.freePerDay}/day · Bonus earned {st.session.bonus_earned || 0} · Purchased {st.session.purchased || 0}</p><div className="myvotes-list">{mv.length ? mv.map(v => <a className="trend-row" key={v.slug} href={`/leader/${encodeURIComponent(v.slug)}`}><span>{v.flag} {v.name}</span><b>×{v.n} · #{v.rank}</b></a>) : <p className="muted small">You haven't voted yet. Your 1 free daily vote is waiting!</p>}</div><div className="hero-cta"><button className="btn btn-gold" onClick={() => actions.openModal('buyvotes')}>⚡ BUY MORE VOTES</button></div></div>; }
 
-export function SignInModal({ afterMsg }) { const [provider, setProvider] = useState('local'); const [busy, setBusy] = useState(false); const nameRef = useRef(null), emailRef = useRef(null), xRef = useRef(null); const go = async () => { const name = (nameRef.current?.value || '').trim(); if (name.length < 2) return actions.toast('Please enter your name', 'error'); setBusy(true); try { const r = await api('/api/auth/login', { method: 'POST', body: { name, email: emailRef.current?.value, provider, x_handle: provider === 'x' ? xRef.current?.value : '' } }); actions.setMe(r.user); actions.closeModal(); actions.toast(`👑 <b>Welcome, ${esc(r.user.name)}!</b> Your votes are now saved to your account${r.user.x_handle ? ' (@' + esc(r.user.x_handle) + ')' : ''}.`, 'epic', 5500); api('/api/my-votes').then(actions.setMyVotes).catch(() => { }); api('/api/session').then(actions.setSession).catch(() => { }); } catch (e) { actions.toast(e.error === 'invalid_email' ? 'That email looks wrong' : (e.error || 'Sign-in failed'), 'error'); setBusy(false); } }; return <div><h3>👑 Join the arena</h3><p className="muted small">{afterMsg || 'Sign in so your votes and purchases follow you on every device.'}</p><div className="social-row"><button className={'btn-social' + (provider === 'x' ? ' sel' : '')} onClick={() => { setProvider('x'); actions.toast('Demo 𝕏 sign-in: enter your name (and handle if you like)', '', 3500); }}>𝕏 &nbsp;Continue with X</button><button className={'btn-social' + (provider === 'google' ? ' sel' : '')} onClick={() => { setProvider('google'); actions.toast('Demo Google sign-in: just enter your name', '', 3500); }}><b style={{ color: '#4285F4' }}>G</b>&nbsp;Continue with Google</button></div><div className="or-line"><span>or with your name</span></div><div className="field"><label>NAME SURNAME *</label><input ref={nameRef} maxLength="60" placeholder="Mehmet Yılmaz" autoFocus /></div>{provider === 'x' ? <div className="field"><label>𝕏 HANDLE</label><input ref={xRef} maxLength="16" placeholder="@mehmet" /></div> : null}<div className="field"><label>EMAIL — optional, reconnects your account anywhere</label><input ref={emailRef} type="email" maxLength="120" placeholder="you@mail.com" /></div><button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={go}>SIGN IN</button><p className="muted small">Demo mode: social sign-in is simulated — no external account is accessed. No password needed.</p></div>; }
+export function SignInModal({ afterMsg }) {
+  const [mode, setMode] = useState('login');
+  const [busy, setBusy] = useState(false);
+  const [identifier, setIdentifier] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
 
-export function AccountModal() { const st = useStore(); const me = st.me; if (!me) return null; const out = async () => { try { await api('/api/auth/logout', { method: 'POST' }); } catch { } actions.setMe(null); actions.closeModal(); actions.toast('Signed out. Your votes stay linked to your account.', '', 4000); }; return <div><h3><span className="avatar big" style={{ background: me.color }}>{me.initials}</span> {me.name}</h3><p className="muted small">{me.provider === 'local' ? 'Signed in with name' : 'Signed in via ' + (me.provider === 'x' ? '𝕏' : me.provider)}{me.x_handle ? <> · <a href={`https://x.com/${me.x_handle}`} target="_blank" rel="noopener">@{me.x_handle}</a></> : null}</p><div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}><button className="pack" onClick={() => actions.openModal('myvotes')}><b>🗳 MY VOTES</b><span>Every leader you've supported</span></button><button className="pack" onClick={out}><b>🚪 SIGN OUT</b><span>This device only — your account stays safe</span></button></div></div>; }
+  const fail = e => actions.toast(e?.error === 'username_taken' ? 'That username is already taken.' : e?.error === 'email_taken' ? 'That email is already registered.' : e?.error === 'invalid_username' ? 'Username: 3–32 characters, letters/numbers/underscore only.' : e?.error === 'invalid_password' ? 'Password must be 8–128 characters.' : e?.error === 'email_delivery_not_configured' ? 'Email verification is not configured on the server yet.' : e?.error === 'email_delivery_failed' ? 'Verification email could not be sent. Please try again later.' : e?.error === 'account_locked' ? 'Too many failed attempts. Try again later.' : e?.message || 'Something went wrong. Please try again.', 'error');
+
+  const login = async () => {
+    if (!identifier.trim() || !password) return actions.toast('Enter your username/email and password.', 'error');
+    setBusy(true);
+    try {
+      const r = await api('/api/auth/login', { method: 'POST', body: { identifier: identifier.trim(), password } });
+      actions.setMe(r.user);
+      actions.closeModal();
+      actions.toast(r.needsEmailVerification ? `👑 Welcome, ${esc(r.user.name)}! Please verify your email to secure the account.` : `👑 <b>Welcome back, ${esc(r.user.name)}!</b> Your votes follow this account.`, 'epic', 5500);
+      api('/api/my-votes').then(actions.setMyVotes).catch(() => { });
+      api('/api/session').then(actions.setSession).catch(() => { });
+    } catch (e) { fail(e); setBusy(false); }
+  };
+
+  const register = async () => {
+    if (!username.trim() || !email.trim() || !password) return actions.toast('Username, email and password are required.', 'error');
+    if (password !== confirm) return actions.toast('Passwords do not match.', 'error');
+    setBusy(true);
+    try {
+      const r = await api('/api/auth/register', { method: 'POST', body: { username: username.trim(), email: email.trim(), password, name: name.trim() || username.trim() } });
+      actions.setMe(r.user);
+      actions.closeModal();
+      actions.toast('✅ Account created. Check your email and verify your address.', 'success', 6500);
+      api('/api/session').then(actions.setSession).catch(() => { });
+    } catch (e) { fail(e); setBusy(false); }
+  };
+
+  const forgot = async () => {
+    if (!email.trim()) return actions.toast('Enter the email address on your account.', 'error');
+    setBusy(true);
+    try { const r = await api('/api/auth/forgot-password', { method: 'POST', body: { email: email.trim() } }); actions.toast(r.message || 'If the account exists, reset instructions have been sent.', 'success', 6000); setMode('login'); }
+    catch (e) { fail(e); }
+    finally { setBusy(false); }
+  };
+
+  return <div>
+    <h3>👑 {mode === 'register' ? 'Create your account' : mode === 'forgot' ? 'Reset your password' : 'Welcome back'}</h3>
+    <p className="muted small">{afterMsg || (mode === 'register' ? 'Create one account with a username, email and password. Your votes and purchases follow you across devices.' : mode === 'forgot' ? 'We will email a secure password-reset link to your account email.' : 'Sign in to keep your votes and purchases linked to your account on every device.')}</p>
+    {mode === 'login' ? <>
+      <div className="field"><label>USERNAME OR EMAIL *</label><input value={identifier} onChange={e => setIdentifier(e.target.value)} maxLength="160" autoComplete="username" placeholder="yourname or you@mail.com" autoFocus /></div>
+      <div className="field"><label>PASSWORD *</label><input value={password} onChange={e => setPassword(e.target.value)} type="password" maxLength="128" autoComplete="current-password" placeholder="••••••••" onKeyDown={e => { if (e.key === 'Enter') login(); }} /></div>
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={login}>{busy ? 'SIGNING IN…' : 'SIGN IN'}</button>
+      <div className="auth-links"><button type="button" className="x-link" onClick={() => setMode('forgot')}>Forgot password?</button><button type="button" className="x-link" onClick={() => setMode('register')}>Create account</button></div>
+    </> : mode === 'register' ? <>
+      <div className="field"><label>USERNAME *</label><input value={username} onChange={e => setUsername(e.target.value.toLowerCase())} maxLength="32" autoComplete="username" placeholder="mehmet_yilmaz" autoFocus /></div>
+      <div className="field"><label>EMAIL *</label><input value={email} onChange={e => setEmail(e.target.value)} type="email" maxLength="160" autoComplete="email" placeholder="you@mail.com" /></div>
+      <div className="field"><label>NAME — optional</label><input value={name} onChange={e => setName(e.target.value)} maxLength="60" autoComplete="name" placeholder="Mehmet Yılmaz" /></div>
+      <div className="field"><label>PASSWORD *</label><input value={password} onChange={e => setPassword(e.target.value)} type="password" maxLength="128" autoComplete="new-password" placeholder="At least 8 characters" /></div>
+      <div className="field"><label>REPEAT PASSWORD *</label><input value={confirm} onChange={e => setConfirm(e.target.value)} type="password" maxLength="128" autoComplete="new-password" placeholder="Repeat password" onKeyDown={e => { if (e.key === 'Enter') register(); }} /></div>
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={register}>{busy ? 'CREATING ACCOUNT…' : 'CREATE ACCOUNT'}</button>
+      <p className="muted small center">A verification email is required. We never need your X/Google/Facebook password.</p>
+      <div className="auth-links"><button type="button" className="x-link" onClick={() => setMode('login')}>Already have an account? Sign in</button></div>
+    </> : <>
+      <div className="field"><label>ACCOUNT EMAIL *</label><input value={email} onChange={e => setEmail(e.target.value)} type="email" maxLength="160" autoComplete="email" placeholder="you@mail.com" autoFocus onKeyDown={e => { if (e.key === 'Enter') forgot(); }} /></div>
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={forgot}>{busy ? 'SENDING…' : 'EMAIL RESET LINK'}</button>
+      <div className="auth-links"><button type="button" className="x-link" onClick={() => setMode('login')}>Back to sign in</button></div>
+    </>}
+  </div>;
+}
+
+export function AccountModal() {
+  const st = useStore(); const me = st.me;
+  if (!me) return null;
+  const out = async () => { try { await api('/api/auth/logout', { method: 'POST' }); } catch { } actions.setMe(null); actions.closeModal(); actions.toast('Signed out. Your votes stay linked to your account.', '', 4000); };
+  return <div><h3><span className="avatar big" style={{ background: me.color }}>{me.initials}</span> {me.name}</h3><p className="muted small">@{me.username} · {me.email}{me.email_verified ? ' · ✓ Email verified' : ' · ⚠ Email not verified'}</p>{!me.email_verified ? <p className="muted small">Verify your email to keep the account fully secured and recoverable.</p> : null}<div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}><button className="pack" onClick={() => actions.openModal('myvotes')}><b>🗳 MY VOTES</b><span>Every leader you've supported</span></button><button className="pack" onClick={out}><b>🚪 SIGN OUT</b><span>Your votes remain linked to this account</span></button></div></div>;
+}
 
 const MODALS = { vote: VoteModal, buyvotes: BuyVotesModal, share: ShareModal, checkout: CheckoutModal, myvotes: MyVotesModal, signin: SignInModal, account: AccountModal };
