@@ -1,0 +1,43 @@
+const fs = require('fs');
+const path = require('path');
+
+const renderPath = path.join(__dirname, '..', 'server', 'render.js');
+
+function repairRender() {
+  let source = fs.readFileSync(renderPath, 'utf8');
+  try {
+    new Function(source);
+    return false;
+  } catch (_) {
+    // The deployed render.js currently contains a parser error around trendingPage.
+  }
+
+  const start = source.indexOf('function trendingPage(){');
+  const end = source.indexOf('function aboutPage(){', start);
+  if (start < 0 || end < 0) throw new Error('Cannot locate trendingPage boundaries');
+
+  const replacement = `function trendingPage(){
+  const t=core.trending();
+  const sec=(title,rows,fmt,badge='')=>\`<section class="panel"><div class="panel-head"><h2>\${title} \${badge}</h2></div>\${rows.length?rows.map(fmt).join(''):'<p class="muted small">Nothing here yet — check back soon.</p>'}</section>\`;
+  const row=(l,extra)=>\`<a class="trend-row big" href="/leader/\${esc(l.slug)}"><span class="tr-rank">#\${l.rank}</span>\${flagImg(l.country_code,20)} <span>\${esc(l.name)}</span>\${extra}</a>\`;
+  const body=\`<section class="page-head"><h1>🔥 TRENDING</h1><p class="muted">Momentum across the last 24 hours and 7 days · updates live</p></section><div class="trending-grid">
+    \${sec('↑ FASTEST RISING',t.risers,l=>row(l,\`<b class="up">↑ +\${l.extra}</b>\`),'<span class="tag hot">HOT</span>')}
+    \${sec('↓ BIGGEST FALLERS',t.fallers,l=>row(l,\`<b class="down">↓ \${l.extra}</b>\`))}
+    \${sec('⚡ MOST VOTED TODAY',t.today,l=>row(l,\`<b>+\${num(l.extra)}</b>\`),'<span class="tag new">LIVE</span>')}
+    \${sec('📅 MOST VOTED THIS WEEK',t.week,l=>row(l,\`<b>+\${num(l.extra)}</b>\`))}
+    \${sec('📣 MOST SHARED',t.shared,l=>row(l,\`<b>\${num(l.extra)} shares</b>\`),'<span class="tag viral">VIRAL</span>')}
+    \${sec('🌍 MOST ACTIVE COUNTRIES',t.activeCountries,c=>\`<a class="trend-row big" href="/country/\${c.code.toLowerCase()}">\${flagImg(c.code,20)} <span>\${esc(c.name)}</span><b>\${num(c.v)} votes</b></a>\`)}
+  </div>\`;
+  return layout({title:'Trending — Global Leaders Live',path:'/trending',activeNav:'TRENDING',description:'Fastest rising leaders, biggest fallers, most voted today and most viral leaders on Global Leaders Live.',data:{page:'trending'},body});
+}
+`;
+
+  source = source.slice(0, start) + replacement + source.slice(end);
+  new Function(source);
+  fs.writeFileSync(renderPath, source, 'utf8');
+  console.log('Production boot repaired server/render.js syntax.');
+  return true;
+}
+
+repairRender();
+require('../server/index.js');
