@@ -8,6 +8,7 @@ const seed = require('./seed');
 const core = require('./core');
 const render = require('./render');
 const api = require('./api');
+const authApi = require('./auth-api');
 const admin = require('./admin');
 const { rateLimit } = require('./services/ratelimit');
 
@@ -64,6 +65,8 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h', index: false }));
+// Real username/email + password accounts take precedence over the legacy demo auth routes.
+app.use('/api/auth', authApi);
 app.use('/api', api);
 app.use('/api/admin', admin);
 
