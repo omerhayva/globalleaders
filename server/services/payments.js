@@ -3,22 +3,43 @@ const crypto = require('crypto');
 const db = require('../db');
 
 const COLD_WALLET_ADDRESS = process.env.CRYPTO_WALLET_ADDRESS || '';
-const CRYPTO_ASSET = process.env.CRYPTO_ASSET || 'USDT';
-const CRYPTO_NETWORK = process.env.CRYPTO_NETWORK || 'TRC20';
+const CRYPTO_ASSET = String(process.env.CRYPTO_ASSET || 'USDT').toUpperCase();
+const CRYPTO_NETWORK = String(process.env.CRYPTO_NETWORK || 'TRC20').toUpperCase();
+
+function cryptoAmountForUsd(amountUsd) {
+  // The initial production checkout deliberately supports stablecoin USDT only.
+  // This keeps the displayed crypto amount deterministic without an exchange-rate oracle.
+  if (CRYPTO_ASSET !== 'USDT') throw new Error('unsupported_crypto_asset');
+  return Number(amountUsd).toFixed(2);
+}
+
+function safeMeta(meta, extra = {}) {
+  const input = { ...(meta || {}), ...extra };
+  const out = {};
+  for (const key of ['advertiser', 'sponsor', 'x_handle', 'text', 'cta', 'url']) {
+    if (input[key] !== undefined && input[key] !== null) out[key] = String(input[key]).slice(0, key === 'text' ? 120 : key === 'url' ? 500 : 80);
+  }
+  return out;
+}
 
 class ColdWalletProvider {
   get name() { return 'cold_wallet'; }
-  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta }) {
+  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta, advertiser }) {
     if (!COLD_WALLET_ADDRESS) throw new Error('crypto_wallet_not_configured');
+    const cryptoAmount = cryptoAmountForUsd(amountUsd);
     const intentId = 'crypto_' + crypto.randomBytes(12).toString('hex');
+    const storedMeta = safeMeta(meta, { advertiser });
     db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,meta)
                 VALUES ('cold_wallet',?,?,?,?,?,'pending',0,?,?)`)
-      .run(intentId, kind, reference, amountUsd, currency, sessionId || null, JSON.stringify(meta || {}));
+      .run(intentId, kind, reference, amountUsd, currency, sessionId || null, JSON.stringify(storedMeta));
     return {
       intentId,
       paymentMethod: 'cold_wallet',
+      amountUsd,
+      cryptoAmount,
+      cryptoAmountDisplay: `${cryptoAmount} ${CRYPTO_ASSET}`,
       wallet: { address: COLD_WALLET_ADDRESS, asset: CRYPTO_ASSET, network: CRYPTO_NETWORK },
-      instructions: 'Send the exact displayed amount to this wallet, then submit the transaction hash. Your purchase is activated only after manual payment verification.'
+      instructions: `Send exactly ${cryptoAmount} ${CRYPTO_ASSET} on ${CRYPTO_NETWORK} to this wallet, then submit the transaction hash. Your purchase is activated only after manual payment verification.`
     };
   }
   confirm(intentId, details = {}) {
@@ -30,10 +51,17 @@ class ColdWalletProvider {
     if (!/^[A-Za-z0-9:_-]{20,180}$/.test(txHash)) return { status: 'failed', error: 'transaction_hash_required' };
     let meta = {};
     try { meta = p.meta ? JSON.parse(p.meta) : {}; } catch { meta = {}; }
+    Object.assign(meta, safeMeta(details));
     meta.txHash = txHash;
     meta.submittedAt = new Date().toISOString();
-    db.prepare("UPDATE payments SET status='pending_verification',meta=? WHERE intent_id=? AND status='pending'")
-      .run(JSON.stringify(meta), intentId);
+    try {
+      const info = db.prepare("UPDATE payments SET status='pending_verification',meta=?,tx_hash=? WHERE intent_id=? AND status='pending'")
+        .run(JSON.stringify(meta), txHash, intentId);
+      if (!info.changes) return { status: 'pending_verification', payment: db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId), idempotent: true };
+    } catch (err) {
+      if (String(err && err.message).includes('UNIQUE constraint failed') && /tx_hash/i.test(String(err.message))) return { status: 'failed', error: 'transaction_hash_already_submitted' };
+      throw err;
+    }
     return { status: 'pending_verification', payment: db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId) };
   }
   handleWebhook() { return null; }
