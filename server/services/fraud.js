@@ -2,7 +2,8 @@
 const crypto = require('crypto');
 const db = require('../db');
 
-const SALT = 'gl-live-salt-v1';
+// Keep the salt outside source control in production. The fallback preserves local/dev compatibility.
+const SALT = process.env.GL_FRAUD_SALT || 'gl-live-salt-v1';
 const hash = s => crypto.createHash('sha256').update(SALT + String(s)).digest('hex').slice(0, 24);
 
 // in-memory throttles (per-process; back with Redis when scaling out)
