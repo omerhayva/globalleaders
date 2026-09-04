@@ -25,17 +25,17 @@ CREATE TABLE IF NOT EXISTS countries (
 CREATE TABLE IF NOT EXISTS leaders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   slug TEXT UNIQUE NOT NULL, name TEXT NOT NULL, country_code TEXT NOT NULL REFERENCES countries(code),
-  status TEXT NOT NULL DEFAULT 'historical',       -- current | historical
-  categories TEXT NOT NULL DEFAULT '[]',           -- JSON array of category ids
+  status TEXT NOT NULL DEFAULT 'historical',
+  categories TEXT NOT NULL DEFAULT '[]',
   era TEXT, years TEXT, title TEXT, bio TEXT,
-  portrait TEXT,                                   -- optional uploaded portrait path
+  portrait TEXT,
   visible INTEGER DEFAULT 1, featured INTEGER DEFAULT 0, verified INTEGER DEFAULT 1,
   sort_order INTEGER DEFAULT 0,
   total_votes INTEGER DEFAULT 0, rank INTEGER, prev_rank INTEGER,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS vote_sessions (
-  id TEXT PRIMARY KEY,                             -- session uuid + date
+  id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL, day TEXT NOT NULL,
   ip TEXT, ua_hash TEXT,
   free_used INTEGER DEFAULT 0, bonus_earned INTEGER DEFAULT 0, bonus_used INTEGER DEFAULT 0,
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS votes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   leader_id INTEGER NOT NULL REFERENCES leaders(id) ON DELETE CASCADE,
   session_id TEXT, user_id INTEGER,
-  type TEXT DEFAULT 'free',                        -- free | bonus | demo | purchased
+  type TEXT DEFAULT 'free',
   source TEXT DEFAULT 'web', country TEXT, ip_hash TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS leader_weekly_stats (
   UNIQUE(leader_id, week)
 );
 CREATE TABLE IF NOT EXISTS advertising_slots (
-  id TEXT PRIMARY KEY,                             -- top-left | top-right | bottom-left | bottom-right
+  id TEXT PRIMARY KEY,
   label TEXT, price_usd REAL DEFAULT 5.0, active INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS advertisements (
@@ -84,11 +84,12 @@ CREATE TABLE IF NOT EXISTS advertisements (
   slot_id TEXT REFERENCES advertising_slots(id),
   advertiser TEXT, image TEXT, text TEXT, cta TEXT, url TEXT,
   starts_at TEXT, ends_at TEXT,
-  status TEXT DEFAULT 'active',                    -- active | replaced | removed
+  status TEXT DEFAULT 'active',
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS ad_purchases (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id TEXT, ad_id INTEGER, payment_id INTEGER,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slot_id TEXT, ad_id INTEGER, payment_id INTEGER,
   advertiser TEXT, amount_usd REAL, created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS anthem_slots (
@@ -97,17 +98,19 @@ CREATE TABLE IF NOT EXISTS anthem_slots (
   purchased_at TEXT
 );
 CREATE TABLE IF NOT EXISTS anthem_purchases (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, country_code TEXT, sponsor TEXT, payment_id INTEGER,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  country_code TEXT, sponsor TEXT, payment_id INTEGER,
   amount_usd REAL, created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS anthem_history (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, country_code TEXT, sponsor TEXT, event TEXT, created_at TEXT DEFAULT (datetime('now'))
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  country_code TEXT, sponsor TEXT, event TEXT, created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider TEXT, intent_id TEXT UNIQUE, kind TEXT,  -- ad | anthem | votes
+  provider TEXT, intent_id TEXT UNIQUE, kind TEXT,
   reference TEXT, amount_usd REAL, currency TEXT DEFAULT 'USD',
-  status TEXT DEFAULT 'pending',                    -- pending | succeeded | failed | refunded
+  status TEXT DEFAULT 'pending',
   demo INTEGER DEFAULT 1, session_id TEXT, meta TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
@@ -122,10 +125,24 @@ CREATE TABLE IF NOT EXISTS fraud_events (
 CREATE TABLE IF NOT EXISTS site_settings (
   key TEXT PRIMARY KEY, value TEXT
 );
+CREATE TABLE IF NOT EXISTS vote_idempotency (
+  session_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_vote_idempotency_created ON vote_idempotency(created_at);
 `);
 
-// ---- lightweight migrations (safe on existing DBs) ----
-const addCol = (table, colDef) => { try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`); } catch { /* exists */ } };
+const addCol = (table, colDef) => {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`);
+  } catch (err) {
+    if (!/duplicate column name/i.test(String(err && err.message))) throw err;
+  }
+};
 addCol('vote_sessions', 'purchased INTEGER DEFAULT 0');
 addCol('vote_sessions', 'purchased_used INTEGER DEFAULT 0');
 addCol('anthem_slots', 'sponsor_x TEXT');
@@ -136,7 +153,7 @@ addCol('leaders', 'suggested_by TEXT');
 addCol('vote_sessions', 'user_id INTEGER');
 addCol('users', 'x_handle TEXT');
 addCol('users', 'avatar_color TEXT');
-addCol('votes', 'device_hash TEXT'); // cihaz bazlı bedava/bonus oy limiti için
+addCol('votes', 'device_hash TEXT');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_votes_device ON votes(device_hash, type, created_at)`);
 
 module.exports = db;
