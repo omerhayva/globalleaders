@@ -7,9 +7,7 @@
     "dev": "node --watch server/index.js",
     "build:react": "node scripts/build-react.js",
     "watch:react": "node scripts/build-react.js --watch",
-    "test": "npm run test:react",
-    "test:react": "node scripts/react-island-test.js",
-    "db:reset": "node -e \"require('./server/seed').resetDemoData(); console.log('✔ Demo verileri sıfırlandı ve yeniden oluşturuldu')\""
+    "test": "npm run test:react"
   },
   "keywords": [],
   "author": "",
