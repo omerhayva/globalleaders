@@ -10,7 +10,7 @@
     document.querySelectorAll('.login-box p').forEach(el => { if (/Demo default password|leaders2026/i.test(el.textContent)) el.remove(); });
     const main = $('#main'); if (!main) return;
     main.querySelectorAll('[data-t="simulator_enabled"],[data-demo]').forEach(el => el.closest('.field')?.remove());
-    main.querySelectorAll('.panel').forEach(panel => { if (/DEMO DATA TOOLS|MockPaymentProvider active|simulated payments/i.test(panel.textContent)) panel.remove(); });
+    main.querySelectorAll('.panel').forEach(panel => { if (/DEMO DATA TOOLS|MockPaymentProvider active/i.test(panel.textContent)) panel.remove(); });
     main.querySelectorAll('.field').forEach(field => { if (/ADMIN PASSWORD/i.test(field.textContent)) field.remove(); });
     main.querySelectorAll('p').forEach(p => { if (/Provider architecture:.*MockPaymentProvider/i.test(p.textContent)) p.textContent = 'Production checkout: direct cold-wallet USDT transfer with manual blockchain verification.'; });
   }
