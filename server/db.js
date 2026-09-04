@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS anthem_history (
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, intent_id TEXT UNIQUE, kind TEXT, reference TEXT,
   amount_usd REAL, currency TEXT DEFAULT 'USD', status TEXT DEFAULT 'pending', demo INTEGER DEFAULT 1,
-  session_id TEXT, meta TEXT, fulfilled_at TEXT, fulfillment_key TEXT, created_at TEXT DEFAULT (datetime('now'))
+  session_id TEXT, meta TEXT, fulfilled_at TEXT, fulfillment_key TEXT, tx_hash TEXT, verified_at TEXT, verified_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS activity_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, message TEXT, country TEXT, leader_id INTEGER, created_at TEXT DEFAULT (datetime('now'))
@@ -125,9 +126,14 @@ addCol('users', 'avatar_color TEXT');
 addCol('votes', 'device_hash TEXT');
 addCol('payments', 'fulfilled_at TEXT');
 addCol('payments', 'fulfillment_key TEXT');
-db.exec(`CREATE INDEX IF NOT EXISTS idx_votes_device ON votes(device_hash, type, created_at)`);
-db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_purchases_payment ON ad_purchases(payment_id) WHERE payment_id IS NOT NULL`);
-db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_anthem_purchases_payment ON anthem_purchases(payment_id) WHERE payment_id IS NOT NULL`);
-db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_fulfillment_key ON payments(fulfillment_key) WHERE fulfillment_key IS NOT NULL`);
+addCol('payments', 'tx_hash TEXT');
+addCol('payments', 'verified_at TEXT');
+addCol('payments', 'verified_by TEXT');
+db.exec(`CREATE INDEX IF NOT EXISTS idx_votes_device ON votes(device_hash, type, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_purchases_payment ON ad_purchases(payment_id) WHERE payment_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_anthem_purchases_payment ON anthem_purchases(payment_id) WHERE payment_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_fulfillment_key ON payments(fulfillment_key) WHERE fulfillment_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_tx_hash ON payments(tx_hash) WHERE tx_hash IS NOT NULL;
+`);
 
 module.exports = db;
