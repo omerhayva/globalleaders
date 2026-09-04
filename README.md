@@ -24,22 +24,23 @@ npm run watch:react
 npm test
 ```
 
-> `npm test` currently covers the React island integration layer. Production deployment should also run backend/API smoke tests against the deployed environment.
-
 ## Environment
 
 Copy `.env.example` to `.env` and replace all placeholders.
 
-Required production variables:
+Production requires the admin/fraud secrets plus a public receiving wallet:
 
 - `NODE_ENV=production`
 - `GL_ADMIN_SECRET` — random, high-entropy secret, at least 32 characters
 - `GL_ADMIN_PASSWORD` — strong admin password, at least 12 characters
 - `GL_FRAUD_SALT` — random secret used to hash abuse identifiers, at least 32 characters
 - `PUBLIC_BASE_URL` — canonical public HTTPS origin
-- `PORT` — optional, defaults to 3000
+- `PAYMENT_PROVIDER=cold_wallet`
+- `CRYPTO_ASSET=USDT`
+- `CRYPTO_NETWORK=TRC20`
+- `CRYPTO_WALLET_ADDRESS` — public receiving address of the cold wallet
 
-Never commit `.env`, database files, credentials, payment secrets, or private keys.
+Never commit `.env`, database files, credentials, seed phrases, private keys, or wallet backups.
 
 ## First boot and data
 
@@ -57,26 +58,24 @@ There is no production vote simulator and no default admin password. Do not rese
 - Interactive world map and dynamic leader share cards.
 - Community leader suggestions enter moderation rather than becoming immediately visible.
 - Advertising and national-anthem sponsorship data models with controlled uploads.
-- Payment provider abstraction with fulfillment fields designed to prevent duplicate fulfillment.
+- Initial payment flow uses direct cold-wallet crypto transfers.
+- Purchase submissions remain pending until the transaction is manually verified.
 - USD base pricing with locale-based display conversion.
 - HMAC-based admin session authentication using environment-only production credentials.
 
-## Payments
+## Initial payment flow: cold wallet
 
-**Real payments are not enabled by the repository's default configuration.** The included mock provider is development architecture only and must never be represented to users as a real charge.
+The first payment version deliberately avoids cards, banks and third-party checkout pages.
 
-Before accepting real money, implement and verify a production provider with:
+1. User selects the product or vote pack.
+2. The server creates a pending payment intent.
+3. Checkout displays the exact price, asset, network and **public cold-wallet address**.
+4. User sends the crypto from their own wallet.
+5. User pastes the transaction hash into the checkout.
+6. The payment becomes `pending_verification`.
+7. **No votes, sponsorship or advertising rights are activated before verification.**
 
-1. provider-side payment creation;
-2. server-side signature verification for webhooks;
-3. webhook idempotency;
-4. atomic fulfillment;
-5. duplicate-payment protection;
-6. refund/dispute handling;
-7. reconciliation and audit logs;
-8. provider-specific legal/tax requirements.
-
-Do not enable a payment provider merely by changing a UI flag.
+This is intentionally a manual-verification first version. Automatic blockchain confirmation should be added only after the wallet/network and reconciliation design are finalized.
 
 ## Architecture
 
@@ -90,7 +89,7 @@ server/
   admin.js              authenticated admin API
   render.js             SSR templates and share-card SVG generation
   services/
-    payments.js         provider abstraction
+    payments.js         cold-wallet payment provider + provider abstraction
     fraud.js            anti-abuse controls
     ratelimit.js        endpoint rate limiting
     sse.js              realtime event bus
@@ -121,7 +120,9 @@ For horizontal scaling:
 - [ ] Production environment variables are configured from a secret manager.
 - [ ] `PUBLIC_BASE_URL` matches the real canonical HTTPS origin.
 - [ ] Admin credentials are unique and not stored in the database.
-- [ ] Real payment provider and signed webhooks are implemented and tested.
+- [ ] `CRYPTO_WALLET_ADDRESS` is a public receiving address only.
+- [ ] Network and asset are tested with a small real transfer before launch.
+- [ ] Manual payment verification and reconciliation are tested.
 - [ ] CAPTCHA is integrated for requests classified as high-risk.
 - [ ] Upload storage and file-serving policy are reviewed.
 - [ ] Leader portraits, historical data and anthem recordings have appropriate rights/licensing.
