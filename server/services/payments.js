@@ -1,6 +1,43 @@
-// Payment provider abstraction. Real money must only flow through a configured provider.
+// Payment provider abstraction. Initial production payment method: manual cold-wallet transfer.
 const crypto = require('crypto');
 const db = require('../db');
+
+const COLD_WALLET_ADDRESS = process.env.CRYPTO_WALLET_ADDRESS || '';
+const CRYPTO_ASSET = process.env.CRYPTO_ASSET || 'USDT';
+const CRYPTO_NETWORK = process.env.CRYPTO_NETWORK || 'TRC20';
+
+class ColdWalletProvider {
+  get name() { return 'cold_wallet'; }
+  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta }) {
+    if (!COLD_WALLET_ADDRESS) throw new Error('crypto_wallet_not_configured');
+    const intentId = 'crypto_' + crypto.randomBytes(12).toString('hex');
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,meta)
+                VALUES ('cold_wallet',?,?,?,?,?,'pending',0,?,?)`)
+      .run(intentId, kind, reference, amountUsd, currency, sessionId || null, JSON.stringify(meta || {}));
+    return {
+      intentId,
+      paymentMethod: 'cold_wallet',
+      wallet: { address: COLD_WALLET_ADDRESS, asset: CRYPTO_ASSET, network: CRYPTO_NETWORK },
+      instructions: 'Send the exact displayed amount to this wallet, then submit the transaction hash. Your purchase is activated only after manual payment verification.'
+    };
+  }
+  confirm(intentId, details = {}) {
+    const p = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId);
+    if (!p) return { status: 'failed', error: 'unknown_intent' };
+    if (p.status === 'pending_verification') return { status: 'pending_verification', payment: p, idempotent: true };
+    if (p.status !== 'pending') return { status: p.status, payment: p };
+    const txHash = String(details.txHash || '').trim().slice(0, 180);
+    if (!/^[A-Za-z0-9:_-]{20,180}$/.test(txHash)) return { status: 'failed', error: 'transaction_hash_required' };
+    let meta = {};
+    try { meta = p.meta ? JSON.parse(p.meta) : {}; } catch { meta = {}; }
+    meta.txHash = txHash;
+    meta.submittedAt = new Date().toISOString();
+    db.prepare("UPDATE payments SET status='pending_verification',meta=? WHERE intent_id=? AND status='pending'")
+      .run(JSON.stringify(meta), intentId);
+    return { status: 'pending_verification', payment: db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId) };
+  }
+  handleWebhook() { return null; }
+}
 
 class MockPaymentProvider {
   get name() { return 'mock'; }
@@ -24,10 +61,9 @@ class MockPaymentProvider {
 class PaymentService {
   constructor() {
     this.providers = new Map();
+    this.register(new ColdWalletProvider());
     this.register(new MockPaymentProvider());
-    // Mock is intentionally disabled by default. A real provider must be registered
-    // and selected explicitly before purchases can be enabled in production.
-    this.active = process.env.PAYMENT_PROVIDER || 'mock';
+    this.active = process.env.PAYMENT_PROVIDER || 'cold_wallet';
   }
   register(provider) { this.providers.set(provider.name, provider); }
   get provider() { return this.providers.get(this.active); }
