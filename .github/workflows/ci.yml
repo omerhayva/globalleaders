@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: node --check server/index.js
+      - run: node --check server/api.js
+      - run: node --check server/admin.js
+      - run: node --check server/core.js
+      - run: node --check server/db.js
+      - run: node --check server/services/fraud.js
+      - run: node --check server/services/sse.js
+      - run: npm test
