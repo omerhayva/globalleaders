@@ -1,4 +1,4 @@
-// Admin API — cookie-auth (HMAC token). Default password stored in site_settings.
+// Admin API — cookie-auth (HMAC token). Production secrets come only from environment.
 const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -12,37 +12,34 @@ const uploads = require('./services/uploads');
 const { sanitizeUrl, cleanText } = require('./services/sanitize');
 
 const router = express.Router();
-// Gizli anahtar: process başına rastgele (veya GL_ADMIN_SECRET env).
-// Sabit kodlanmış anahtar token'ların süre boyunca geçerli kalmasını sağlıyordu.
-const SECRET = process.env.GL_ADMIN_SECRET || crypto.randomBytes(32).toString('hex');
+const SECRET = process.env.GL_ADMIN_SECRET;
+const ADMIN_PASSWORD = process.env.GL_ADMIN_PASSWORD;
 const TOKEN_TTL_MS = 12 * 3600 * 1000;
-const sign = v => crypto.createHmac('sha256', SECRET).update(v).digest('hex');
+
+const sign = v => crypto.createHmac('sha256', SECRET || 'missing-admin-secret').update(v).digest('hex');
 const makeToken = () => { const t = 'adm.' + Date.now(); return t + '.' + sign(t); };
 const validToken = tok => {
-  if (!tok || typeof tok !== 'string') return false;
+  if (!SECRET || !tok || typeof tok !== 'string') return false;
   const i = tok.lastIndexOf('.');
   if (i <= 0) return false;
   const base = tok.slice(0, i), sig = tok.slice(i + 1);
   const expected = sign(base);
-  // sürekli uzunlukta karşılaştırma + süre kontrolü (çalınan token artık süresiz değil)
   if (sig.length !== expected.length) return false;
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
   const ts = parseInt(base.split('.')[1], 10);
-  return Number.isFinite(ts) && Date.now() - ts < TOKEN_TTL_MS;
+  return Number.isFinite(ts) && Date.now() - ts >= 0 && Date.now() - ts < TOKEN_TTL_MS;
 };
-// Parola karşılaştırması: hash üzerinden timing-safe (yan kanal sızıntısı yok).
-const sha256 = s => crypto.createHash('sha256').update(String(s)).digest('hex');
-const passwordOk = (pw) => {
-  const stored = String(core.getSetting('admin_password') || 'leaders2026');
-  const a = Buffer.from(sha256(pw), 'hex'), b = Buffer.from(sha256(stored), 'hex');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+const passwordOk = pw => {
+  if (!ADMIN_PASSWORD) return false;
+  const a = crypto.createHash('sha256').update(String(pw)).digest();
+  const b = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
+  return crypto.timingSafeEqual(a, b);
 };
 
 router.post('/login', rateLimit({ windowMs: 10 * 60_000, max: 5, name: 'admin-login', message: 'Too many attempts. Try again in a few minutes.' }), (req, res) => {
+  if (!SECRET || !ADMIN_PASSWORD) return res.status(503).json({ error: 'admin_credentials_not_configured' });
   const pw = String((req.body || {}).password || '');
-  if (!passwordOk(pw)) {
-    return res.status(401).json({ error: 'wrong_password' });
-  }
+  if (!passwordOk(pw)) return res.status(401).json({ error: 'wrong_password' });
   res.cookie('gl_admin', makeToken(), { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: TOKEN_TTL_MS });
   res.json({ ok: true });
 });
@@ -58,8 +55,6 @@ router.get('/dashboard', (req, res) => {
     `SELECT COALESCE(SUM(amount_usd),0) s FROM payments WHERE status='succeeded' AND created_at >= datetime('now', ?)`).get(period).s;
   res.json({
     stats: core.globalStats(),
-    demoMode: core.getSetting('demo_mode') === '1',
-    simulator: core.getSetting('simulator_enabled') === '1',
     sseClients: sse.count(),
     votesPerHour: db.prepare(`SELECT COUNT(*) c FROM votes WHERE created_at >= datetime('now','-1 hour')`).get().c,
     votesByCountry: db.prepare(`SELECT country, COUNT(*) c FROM votes WHERE created_at >= datetime('now','-7 day') GROUP BY country ORDER BY c DESC LIMIT 12`).all(),
@@ -83,20 +78,24 @@ router.get('/dashboard', (req, res) => {
 
 // ---- leaders CRUD ----
 router.get('/leaders', (req, res) => {
-  const q = `%${String(req.query.q || '')}%`;
+  const q = `%${String(req.query.q || '').slice(0, 100)}%`;
   res.json(db.prepare(`SELECT * FROM leaders WHERE name LIKE ? ORDER BY total_votes DESC LIMIT 300`).all(q));
 });
 router.post('/leaders', (req, res) => {
   const b = req.body || {};
-  if (!b.name || !b.country_code) return res.status(400).json({ error: 'name and country_code required' });
-  const cc = String(b.country_code).toUpperCase();
-  db.prepare(`INSERT OR IGNORE INTO countries (code,name,anthem_title) VALUES (?,?, 'National Anthem')`)
-    .run(cc, new Intl.DisplayNames(['en'], { type: 'region' }).of(cc) || cc);
-  const slug = b.slug || seed.slugify(b.name);
+  const name = cleanText(b.name, 80);
+  const cc = String(b.country_code || '').trim().toUpperCase();
+  if (name.length < 2 || !/^[A-Z]{2}$/.test(cc)) return res.status(400).json({ error: 'valid name and country_code required' });
+  const countryName = new Intl.DisplayNames(['en'], { type: 'region' }).of(cc);
+  if (!countryName) return res.status(400).json({ error: 'invalid_country' });
+  db.prepare(`INSERT OR IGNORE INTO countries (code,name,anthem_title) VALUES (?,?, 'National Anthem')`).run(cc, countryName);
+  const slug = seed.slugify(name);
+  if (db.prepare('SELECT 1 FROM leaders WHERE slug=?').get(slug)) return res.status(409).json({ error: 'slug_exists' });
+  const status = ['current','historical'].includes(b.status) ? b.status : 'historical';
+  const categories = Array.isArray(b.categories) ? b.categories.slice(0, 12).map(x => cleanText(x, 40)) : [];
   db.prepare(`INSERT INTO leaders (slug,name,country_code,status,categories,era,years,title,bio,visible,featured,verified)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(slug, b.name, cc, b.status || 'historical', JSON.stringify(b.categories || []),
-      b.era || '', b.years || '', b.title || '', b.bio || '', b.visible ?? 1, b.featured ?? 0, b.verified ?? 1);
+    .run(slug, name, cc, status, JSON.stringify(categories), cleanText(b.era, 60), cleanText(b.years, 40), cleanText(b.title, 100), cleanText(b.bio, 1200), b.visible ? 1 : 0, b.featured ? 1 : 0, b.verified ? 1 : 0);
   seed.recomputeRanks();
   res.json({ ok: true, slug });
 });
@@ -104,8 +103,10 @@ router.put('/leaders/:id', (req, res) => {
   const b = req.body || {};
   const fields = ['name','country_code','status','era','years','title','bio','visible','featured','verified','sort_order','portrait'];
   const sets = [], args = [];
-  fields.forEach(f => { if (b[f] !== undefined) { sets.push(`${f}=?`); args.push(b[f]); } });
-  if (b.categories !== undefined) { sets.push('categories=?'); args.push(JSON.stringify(b.categories)); }
+  if (b.name !== undefined) { const v = cleanText(b.name, 80); if (v.length < 2) return res.status(400).json({ error: 'invalid_name' }); sets.push('name=?'); args.push(v); }
+  if (b.country_code !== undefined) { const v = String(b.country_code).toUpperCase(); if (!/^[A-Z]{2}$/.test(v)) return res.status(400).json({ error: 'invalid_country' }); sets.push('country_code=?'); args.push(v); }
+  for (const f of fields.filter(x => !['name','country_code'].includes(x))) if (b[f] !== undefined) { sets.push(`${f}=?`); args.push(['visible','featured','verified'].includes(f) ? (b[f] ? 1 : 0) : cleanText(b[f], f === 'bio' ? 1200 : 200)); }
+  if (b.categories !== undefined) { if (!Array.isArray(b.categories)) return res.status(400).json({ error: 'invalid_categories' }); sets.push('categories=?'); args.push(JSON.stringify(b.categories.slice(0,12).map(x => cleanText(x,40)))); }
   if (!sets.length) return res.json({ ok: true });
   args.push(req.params.id);
   db.prepare(`UPDATE leaders SET ${sets.join(',')} WHERE id=?`).run(...args);
@@ -113,14 +114,14 @@ router.put('/leaders/:id', (req, res) => {
   res.json({ ok: true });
 });
 router.delete('/leaders/:id', (req, res) => {
-  db.prepare('DELETE FROM leaders WHERE id=?').run(req.params.id);
+  const info = db.prepare(`UPDATE leaders SET visible=0, featured=0, status='archived' WHERE id=?`).run(req.params.id);
   seed.recomputeRanks();
-  res.json({ ok: true });
+  res.json({ ok: info.changes > 0, archived: info.changes > 0 });
 });
 
 // portrait upload (base64 JSON, validated)
 router.post('/leaders/:id/portrait', (req, res) => {
-  const saved = saveImage((req.body || {}).data, 'portrait-' + req.params.id);
+  const saved = uploads.saveImage((req.body || {}).data, 'portrait-' + req.params.id);
   if (saved.error) return res.status(400).json(saved);
   db.prepare('UPDATE leaders SET portrait=? WHERE id=?').run(saved.path, req.params.id);
   res.json({ ok: true, path: saved.path });
@@ -130,16 +131,18 @@ router.post('/leaders/:id/portrait', (req, res) => {
 router.get('/countries', (req, res) => res.json(db.prepare('SELECT * FROM countries ORDER BY name').all()));
 router.put('/countries/:code', (req, res) => {
   const b = req.body || {};
+  const code = String(req.params.code || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return res.status(400).json({ error: 'invalid_country' });
   db.prepare('UPDATE countries SET name=COALESCE(?,name), anthem_title=COALESCE(?,anthem_title), status=COALESCE(?,status) WHERE code=?')
-    .run(b.name ?? null, b.anthem_title ?? null, b.status ?? null, req.params.code.toUpperCase());
+    .run(b.name === undefined ? null : cleanText(b.name, 100), b.anthem_title === undefined ? null : cleanText(b.anthem_title, 160), b.status === undefined ? null : cleanText(b.status, 30), code);
   res.json({ ok: true });
 });
-// legally-cleared anthem audio upload (admin only)
 router.post('/countries/:code/anthem-audio', (req, res) => {
-  const { data } = req.body || {};
-  const saved = saveAudio(data, 'anthem-' + req.params.code.toLowerCase());
+  const code = String(req.params.code || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return res.status(400).json({ error: 'invalid_country' });
+  const saved = uploads.saveAudio((req.body || {}).data, 'anthem-' + code.toLowerCase());
   if (saved.error) return res.status(400).json(saved);
-  db.prepare('UPDATE countries SET anthem_audio=? WHERE code=?').run(saved.path, req.params.code.toUpperCase());
+  db.prepare('UPDATE countries SET anthem_audio=? WHERE code=?').run(saved.path, code);
   res.json({ ok: true, path: saved.path });
 });
 
@@ -163,7 +166,6 @@ router.get('/ads', (req, res) => res.json({
 router.post('/ads', (req, res) => {
   const b = req.body || {};
   if (!b.slot_id) return res.status(400).json({ error: 'slot_id required' });
-  // Görsel: sunucu tarafında doğrulanıp /uploads'a yazılır (ham data-uri DB'ye girmez).
   let img = b.image || null;
   if (img && String(img).startsWith('data:')) {
     const saved = uploads.saveImage(img, 'ad-' + Date.now());
@@ -173,19 +175,12 @@ router.post('/ads', (req, res) => {
   db.prepare(`UPDATE advertisements SET status='replaced' WHERE slot_id=? AND status='active'`).run(b.slot_id);
   db.prepare(`INSERT INTO advertisements (slot_id,advertiser,image,text,cta,url,starts_at,ends_at,status)
     VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')),?, 'active')`)
-    .run(b.slot_id, cleanText(b.advertiser, 60) || 'Admin', img, cleanText(b.text, 120) || '',
-         cleanText(b.cta, 30) || '', sanitizeUrl(b.url), b.starts_at || null, b.ends_at || null);
+    .run(b.slot_id, cleanText(b.advertiser, 60) || 'Admin', img, cleanText(b.text, 120) || '', cleanText(b.cta, 30) || '', sanitizeUrl(b.url), b.starts_at || null, b.ends_at || null);
   sse.broadcast('ad_purchased', { slotId: b.slot_id, advertiser: cleanText(b.advertiser, 60) || 'Admin' });
   res.json({ ok: true });
 });
-router.post('/ads/:id/remove', (req, res) => {
-  db.prepare(`UPDATE advertisements SET status='removed' WHERE id=?`).run(req.params.id);
-  res.json({ ok: true });
-});
-router.post('/ads/image', (req, res) => {
-  const saved = saveImage((req.body || {}).data, 'ad-' + Date.now());
-  saved.error ? res.status(400).json(saved) : res.json(saved);
-});
+router.post('/ads/:id/remove', (req, res) => { db.prepare(`UPDATE advertisements SET status='removed' WHERE id=?`).run(req.params.id); res.json({ ok: true }); });
+router.post('/ads/image', (req, res) => { const saved = uploads.saveImage((req.body || {}).data, 'ad-' + Date.now()); saved.error ? res.status(400).json(saved) : res.json(saved); });
 
 // ---- anthems / purchases / payments ----
 router.get('/anthems', (req, res) => res.json({
@@ -193,8 +188,10 @@ router.get('/anthems', (req, res) => res.json({
   purchases: db.prepare('SELECT * FROM anthem_purchases ORDER BY id DESC LIMIT 50').all()
 }));
 router.post('/anthems/:code/clear', (req, res) => {
-  db.prepare('DELETE FROM anthem_slots WHERE country_code=?').run(req.params.code.toUpperCase());
-  db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(req.params.code.toUpperCase(), 'admin', 'cleared');
+  const code = String(req.params.code || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return res.status(400).json({ error: 'invalid_country' });
+  db.prepare('DELETE FROM anthem_slots WHERE country_code=?').run(code);
+  db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(code, 'admin', 'cleared');
   res.json({ ok: true });
 });
 router.get('/payments', (req, res) => res.json(db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 100').all()));
@@ -205,23 +202,22 @@ router.get('/share-analytics', (req, res) => res.json({
   recent: db.prepare(`SELECT s.id, l.name leader, s.platform, s.clicks, s.created_at FROM shares s JOIN leaders l ON l.id=s.leader_id ORDER BY s.created_at DESC LIMIT 50`).all()
 }));
 
-// ---- settings & demo tools ----
-router.get('/settings', (req, res) => res.json(Object.fromEntries(db.prepare('SELECT key,value FROM site_settings').all().map(r => [r.key, r.value]))));
+// ---- settings ----
+const ALLOWED_SETTINGS = new Set(['demo_mode','free_votes_per_day','max_bonus_per_day','site_name','maintenance_mode']);
+router.get('/settings', (req, res) => res.json(Object.fromEntries(db.prepare('SELECT key,value FROM site_settings').all().filter(r => ALLOWED_SETTINGS.has(r.key)).map(r => [r.key, r.value]))));
 router.post('/settings', (req, res) => {
-  Object.entries(req.body || {}).forEach(([k, v]) => core.setSetting(k, v));
+  const body = req.body || {};
+  const unknown = Object.keys(body).filter(k => !ALLOWED_SETTINGS.has(k));
+  if (unknown.length) return res.status(400).json({ error: 'setting_not_allowed', keys: unknown });
+  for (const [k, v] of Object.entries(body)) {
+    if (k === 'free_votes_per_day' || k === 'max_bonus_per_day') {
+      const n = Number.parseInt(v, 10); if (!Number.isInteger(n) || n < 0 || n > 100) return res.status(400).json({ error: 'invalid_setting', key: k });
+      core.setSetting(k, n);
+    } else if (k === 'demo_mode' || k === 'maintenance_mode') {
+      core.setSetting(k, v === true || v === 1 || v === '1' ? '1' : '0');
+    } else core.setSetting(k, cleanText(v, 100));
+  }
   res.json({ ok: true });
 });
-router.post('/demo/reset', (req, res) => { seed.resetDemoData(); res.json({ ok: true }); });
-router.post('/demo/seed-votes', (req, res) => { seed.seedDemoVotes(); res.json({ ok: true }); });
-router.post('/demo/clear-votes', (req, res) => { seed.clearDemoVotes(); res.json({ ok: true }); });
-router.post('/demo/clear-purchases', (req, res) => {
-  ['advertisements','ad_purchases','anthem_purchases','anthem_history','payments'].forEach(t => db.prepare(`DELETE FROM ${t}`).run());
-  db.prepare('DELETE FROM anthem_slots').run();
-  res.json({ ok: true });
-});
-
-// ---- upload validation helpers (paylaşılan: services/uploads.js) ----
-const saveImage = uploads.saveImage;
-const saveAudio = uploads.saveAudio;
 
 module.exports = router;
