@@ -65,7 +65,6 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h', index: false }));
-// Real username/email + password accounts take precedence over the legacy demo auth routes.
 app.use('/api/auth', authApi);
 app.use('/api', api);
 app.use('/api/admin', admin);
@@ -97,6 +96,13 @@ app.get('/about', (req, res) => send(res, render.aboutPage()));
 app.get('/legal', (req, res) => send(res, render.legalPage()));
 app.get('/vote/:slug', (req, res) => { const ref = String(req.query.ref || '').slice(0, 24); res.redirect(302, `/leader/${encodeURIComponent(req.params.slug)}${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`); });
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
+
+app.get('/reset-password', (req, res) => {
+  const token = String(req.query.token || '').replace(/[<>&"']/g, '').slice(0, 128);
+  if (!token) return res.status(400).type('html').send('<h1>Missing reset token</h1><p>Use the password reset link from your email.</p>');
+  const safeToken = JSON.stringify(token);
+  res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reset password — Global Leaders Live</title><style>body{font-family:system-ui,sans-serif;max-width:440px;margin:12vh auto;padding:24px;background:#090b10;color:#f5f5f5}input,button{box-sizing:border-box;width:100%;padding:13px;margin:8px 0;border-radius:8px;border:1px solid #444;background:#151922;color:#fff}button{cursor:pointer;font-weight:700;background:#f5b524;color:#111;border:0}.muted{color:#aaa;font-size:14px}.ok{color:#62d98a}.err{color:#ff7b7b}</style></head><body><h1>Reset your password</h1><p class="muted">Choose a new password for your Global Leaders Live account.</p><form id="f"><input id="p" type="password" minlength="8" maxlength="128" placeholder="New password" autocomplete="new-password" required><input id="p2" type="password" minlength="8" maxlength="128" placeholder="Repeat password" autocomplete="new-password" required><button>RESET PASSWORD</button></form><p id="m" class="muted"></p><script>const token=${safeToken};document.getElementById('f').addEventListener('submit',async e=>{e.preventDefault();const p=document.getElementById('p').value,p2=document.getElementById('p2').value,m=document.getElementById('m');if(p!==p2){m.className='err';m.textContent='Passwords do not match.';return}try{const r=await fetch('/api/auth/reset-password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,password:p})});const j=await r.json();if(!r.ok)throw new Error(j.message||j.error||'Reset failed');m.className='ok';m.textContent='Password reset successfully. You can now return to the site and sign in.';document.getElementById('f').remove()}catch(err){m.className='err';m.textContent=err.message}}</script></body></html>`);
+});
 
 app.get('/sitemap.xml', (req, res) => {
   const base = String(process.env.PUBLIC_BASE_URL || 'https://globalleaders.live').replace(/\/$/, '');
