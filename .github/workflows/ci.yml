@@ -23,4 +23,7 @@ jobs:
       - run: node --check server/db.js
       - run: node --check server/services/fraud.js
       - run: node --check server/services/sse.js
+      - run: node --check server/services/payments.js
+      - run: node --check server/services/payment-fulfillment.js
+      - run: npm run build:react
       - run: npm test
