@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node scripts/boot.js",
     "dev": "node --watch server/index.js",
     "build:react": "node scripts/build-react.js",
     "watch:react": "node scripts/build-react.js --watch",
