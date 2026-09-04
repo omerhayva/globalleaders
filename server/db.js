@@ -11,7 +11,11 @@ db.pragma('foreign_keys = ON');
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT UNIQUE, display_name TEXT, provider TEXT DEFAULT 'guest',
+  email TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT,
+  display_name TEXT, provider TEXT DEFAULT 'local',
+  email_verified_at TEXT, email_verify_token_hash TEXT, email_verify_expires_at TEXT,
+  password_reset_token_hash TEXT, password_reset_expires_at TEXT,
+  failed_login_count INTEGER DEFAULT 0, locked_until TEXT,
   is_admin INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS categories (
@@ -121,6 +125,15 @@ addCol('advertisements', 'x_handle TEXT');
 addCol('leaders', 'community INTEGER DEFAULT 0');
 addCol('leaders', 'suggested_by TEXT');
 addCol('vote_sessions', 'user_id INTEGER');
+addCol('users', 'username TEXT');
+addCol('users', 'password_hash TEXT');
+addCol('users', 'email_verified_at TEXT');
+addCol('users', 'email_verify_token_hash TEXT');
+addCol('users', 'email_verify_expires_at TEXT');
+addCol('users', 'password_reset_token_hash TEXT');
+addCol('users', 'password_reset_expires_at TEXT');
+addCol('users', 'failed_login_count INTEGER DEFAULT 0');
+addCol('users', 'locked_until TEXT');
 addCol('users', 'x_handle TEXT');
 addCol('users', 'avatar_color TEXT');
 addCol('votes', 'device_hash TEXT');
@@ -129,7 +142,10 @@ addCol('payments', 'fulfillment_key TEXT');
 addCol('payments', 'tx_hash TEXT');
 addCol('payments', 'verified_at TEXT');
 addCol('payments', 'verified_by TEXT');
-db.exec(`CREATE INDEX IF NOT EXISTS idx_votes_device ON votes(device_hash, type, created_at);
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_verify_token ON users(email_verify_token_hash) WHERE email_verify_token_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(password_reset_token_hash) WHERE password_reset_token_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_votes_device ON votes(device_hash, type, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_purchases_payment ON ad_purchases(payment_id) WHERE payment_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_anthem_purchases_payment ON anthem_purchases(payment_id) WHERE payment_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_fulfillment_key ON payments(fulfillment_key) WHERE fulfillment_key IS NOT NULL;
