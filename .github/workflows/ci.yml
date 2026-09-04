@@ -28,6 +28,20 @@ jobs:
       - run: node --check server/services/sse.js
       - run: node --check server/services/payments.js
       - run: node --check server/services/payment-fulfillment.js
+      - name: Apply responsive UI hardening
+        run: node scripts/apply-ui-hardening.js
+      - name: Commit UI hardening
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet -- public/css/style.css; then
+            echo "UI hardening is already current."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add public/css/style.css
+            git commit -m "fix: responsive UI hardening [skip ci]"
+            git push
+          fi
       - run: npm run build:react
       - name: Commit generated React bundle
         if: github.event_name == 'push'
