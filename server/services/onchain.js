@@ -39,6 +39,9 @@ function base58ToHex(address) {
   return hex.slice(0, 42);
 }
 
+// TRON (TRC20) adresleri T ile başlar ve toplam 34 karakterdir.
+function isValidTronAddress(address) { return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(String(address || '')); }
+
 const normHex = v => String(v || '').toLowerCase().replace(/^0x/, '');
 function sameAddress(a, b) {
   if (!a || !b) return false;
@@ -141,4 +144,4 @@ function explorerUrl(network, txHash) {
   return null;
 }
 
-module.exports = { verifyUsdtTrc20, explorerUrl, base58ToHex, sameAddress, findUsdtTransfer, USDT_TRC20_CONTRACT, REASON_TEXT };
+module.exports = { verifyUsdtTrc20, explorerUrl, base58ToHex, sameAddress, findUsdtTransfer, isValidTronAddress, USDT_TRC20_CONTRACT, REASON_TEXT };

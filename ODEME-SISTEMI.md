@@ -68,6 +68,10 @@ Bunlar güvenlik gereği koda gömülmez; sunucudaki `.env` dosyasına yazılır
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Webhooks → uç nokta ekleyince | `whsec_...` |
 | `GL_ADMIN_SECRET`, `GL_ADMIN_PASSWORD`, `GL_FRAUD_SALT` | `openssl rand -hex 32` | Admin paneli güvenliği |
 
+**Önemli:** Cüzdan adresi `T` ile başlayan 34 karakterlik geçerli bir TRC20 adresi
+değilse site kripto ödemeyi **güvenlik gereği kapatır** (yanlış adrese para
+gitmesin diye) ve admin ekranında "GEÇERSİZ ADRES" uyarısı gösterir.
+
 Önerilen (zorunlu değil): `TRON_API_KEY` — TronGrid ücretsiz anahtarı; yoğun
 trafikte hız limiti için. `AUTO_ONCHAIN_VERIFY=1` — hash girilir girilmez
 zincir kontrolü yapılsın (varsayılan olarak açmanız önerilir).

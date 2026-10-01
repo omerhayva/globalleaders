@@ -13,6 +13,7 @@
 // değiştirmek yeterlidir.
 const crypto = require('crypto');
 const db = require('../db');
+const { isValidTronAddress } = require('./onchain');
 
 const COLD_WALLET_ADDRESS = process.env.CRYPTO_WALLET_ADDRESS || '';
 const CRYPTO_ASSET = String(process.env.CRYPTO_ASSET || 'USDT').toUpperCase();
@@ -42,8 +43,12 @@ class ColdWalletProvider {
   get name() { return 'cold_wallet'; }
   get method() { return 'crypto'; }
   get configured() { return !!COLD_WALLET_ADDRESS; }
+  // Yanlış yazılmış bir cüzdan adresine müşteri para göndermesin diye adres
+  // biçimi kontrol edilir (TRC20 = T ile başlayan 34 karakterlik base58 adres).
+  get addressValid() { return CRYPTO_NETWORK !== 'TRC20' ? !!COLD_WALLET_ADDRESS : isValidTronAddress(COLD_WALLET_ADDRESS); }
   createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta, advertiser }) {
     if (!COLD_WALLET_ADDRESS) throw new Error('crypto_wallet_not_configured');
+    if (!this.addressValid) throw new Error('crypto_wallet_address_invalid');
     const cryptoAmount = cryptoAmountForUsd(amountUsd); const intentId = 'crypto_' + crypto.randomBytes(12).toString('hex');
     const storedMeta = safeMeta(meta, { advertiser });
     db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,meta)
@@ -201,7 +206,7 @@ class PaymentService {
     const crypto = this.providers.get('cold_wallet');
     const card = this.providers.get('stripe');
     return {
-      crypto: { enabled: !!crypto.configured, asset: CRYPTO_ASSET, network: CRYPTO_NETWORK, label: `Crypto (${CRYPTO_ASSET} · ${CRYPTO_NETWORK})` },
+      crypto: { enabled: !!crypto.configured && crypto.addressValid, configured: !!crypto.configured, addressValid: crypto.addressValid, asset: CRYPTO_ASSET, network: CRYPTO_NETWORK, label: `Crypto (${CRYPTO_ASSET} · ${CRYPTO_NETWORK})` },
       card: { enabled: !!card.configured, provider: 'stripe', label: 'Credit / debit card' },
       autoOnchainVerify: process.env.AUTO_ONCHAIN_VERIFY === '1'
     };

@@ -234,7 +234,23 @@ const j = async (method, url, body, headers = {}) => {
   const staleHook = await j('POST', '/api/webhooks/stripe', stale, { 'stripe-signature': `t=${oldT},v1=${oldSig}` });
   ok('eski zaman damgalı imza reddedildi (replay)', staleHook.status === 400, JSON.stringify(staleHook.json));
 
-  console.log('\n5) Ek kontroller');
+  console.log('\n5) Güvenlik kontrolleri');
+  // Placeholder/geçersiz cüzdan adresiyle kripto ödeme başlatılamaz.
+  {
+    const saved = process.env.CRYPTO_WALLET_ADDRESS;
+    process.env.CRYPTO_WALLET_ADDRESS = 'TDev' + 'x'.repeat(20) + '0'.repeat(11);
+    delete require.cache[require.resolve('../server/services/payments')];
+    delete require.cache[require.resolve('../server/services/onchain')];
+    const fresh = require('../server/services/payments');
+    ok('geçersiz adres → kripto kapalı', fresh.availability().crypto.enabled === false && fresh.availability().crypto.addressValid === false, JSON.stringify(fresh.availability().crypto));
+    let blocked = null; try { fresh.createIntent({ method: 'crypto', kind: 'votes', reference: 'votes-10', amountUsd: 1 }); } catch (e) { blocked = e.message; }
+    ok('geçersiz adresle intent engellendi', blocked === 'crypto_wallet_address_invalid', String(blocked));
+    process.env.CRYPTO_WALLET_ADDRESS = saved;
+    delete require.cache[require.resolve('../server/services/payments')];
+    delete require.cache[require.resolve('../server/services/onchain')];
+  }
+
+  console.log('\n6) Ek kontroller');
   const methods = await j('GET', '/api/payment-methods');
   ok('ödeme yöntemleri ucu', methods.json.crypto && methods.json.crypto.enabled === true && methods.json.card && methods.json.card.enabled === true, JSON.stringify(methods.json));
   const otherSession = await j('GET', `/api/purchase/status?intent=${intentId}`, undefined, { 'x-gl-session': 'a'.repeat(32) });

@@ -140,7 +140,11 @@ router.get('/payments', (req, res) => {
       verified_by: r.verified_by, verified_at: r.verified_at, fulfilled_at: r.fulfilled_at, created_at: r.created_at, session_id: r.session_id
     };
   });
-  res.json({ payments: out, wallet: { address: cfg.address || null, asset: cfg.asset, network: cfg.network, autoVerify: process.env.AUTO_ONCHAIN_VERIFY === '1' }, cardConfigured: !!process.env.STRIPE_SECRET_KEY });
+  res.json({
+    payments: out,
+    wallet: { address: cfg.address || null, asset: cfg.asset, network: cfg.network, addressValid: require('./services/onchain').isValidTronAddress(cfg.address), autoVerify: process.env.AUTO_ONCHAIN_VERIFY === '1' },
+    cardConfigured: !!process.env.STRIPE_SECRET_KEY
+  });
 });
 router.post('/payments/:id/check-chain', rateLimit({ windowMs: 60_000, max: 30, name: 'payment-check-chain' }), async (req, res) => {
   const id = Number.parseInt(req.params.id, 10); if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid_payment_id' });

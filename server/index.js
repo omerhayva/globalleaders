@@ -129,4 +129,11 @@ app.use((req, res) => res.status(404).type('html').send(notFound()));
 app.use((err, req, res, next) => { console.error(err); if (res.headersSent) return next(err); res.status(500).json({ error: 'internal_error' }); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`GLOBAL LEADERS LIVE running on 0.0.0.0:${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`GLOBAL LEADERS LIVE running on 0.0.0.0:${PORT}`);
+  const wallet = process.env.CRYPTO_WALLET_ADDRESS || '';
+  if (wallet && process.env.CRYPTO_NETWORK !== 'ERC20' && !require('./services/onchain').isValidTronAddress(wallet)) {
+    console.warn('⚠️  CRYPTO_WALLET_ADDRESS is set but does not look like a valid TRON (TRC20) address — crypto checkout is blocked until it is fixed.');
+  }
+  if (!process.env.STRIPE_SECRET_KEY) console.warn('ℹ️  STRIPE_SECRET_KEY is not set — the card payment option stays hidden.');
+});

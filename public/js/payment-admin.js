@@ -61,7 +61,7 @@
         <h2>💳 ÖDEME DOĞRULAMA</h2>
         <p class="muted small">Kripto ödemesi <b>zincirde kanıtlanmadan</b> aktifleştirilmez: “🔗 Zincirde kontrol et” düğmesi işlem hash’ini TRON ağında arar (varlık, ağ, alıcı cüzdan ve tutar birebir eşleşmeli). Kart ödemeleri Stripe webhook’u ile otomatik onaylanır, burada yalnızca durumunu görürsünüz.</p>
         <p class="small">
-          Kripto cüzdan: <b>${wallet.address ? esc(wallet.address) : '⚠️ CRYPTO_WALLET_ADDRESS tanımlı değil'}</b> · ${esc(wallet.asset || 'USDT')}/${esc(wallet.network || 'TRC20')} ·
+          Kripto cüzdan: <b>${wallet.address ? esc(wallet.address) : '⚠️ CRYPTO_WALLET_ADDRESS tanımlı değil'}</b>${wallet.address && wallet.addressValid === false ? ' <span class="chain-bad">⚠️ GEÇERSİZ ADRES — kripto ödeme kapalı</span>' : ''} · ${esc(wallet.asset || 'USDT')}/${esc(wallet.network || 'TRC20')} ·
           Otomatik doğrulama: <b>${wallet.autoVerify ? 'AÇIK (hash girilince zincir kontrol edilir)' : 'kapalı (elle “Zincirde kontrol et”)'}</b> ·
           Kart sağlayıcı: <b>${data.cardConfigured ? 'Stripe bağlı' : '⚠️ STRIPE_SECRET_KEY tanımlı değil'}</b>
         </p>
