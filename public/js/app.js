@@ -29,7 +29,8 @@
       return (hex(h1) + hex(h2) + hex(h1 ^ h2) + hex((h1 + h2) >>> 0)).slice(0, 32);
     } catch { return ''; }
   };
-  const GL_DEVICE = computeDevice();
+  // Gömülü ortam/test sayfadan sabitleyebilir; yoksa parmak izi hesaplanır.
+  const GL_DEVICE = (() => { try { const ov = window.__GL_DEVICE__; return (typeof ov === 'string' && /^[A-Za-z0-9_-]{8,200}$/.test(ov)) ? ov : computeDevice(); } catch { return computeDevice(); } })();
   const origFetch = window.fetch.bind(window);
   window.fetch = (url, opts) => {
     const o = opts || {};

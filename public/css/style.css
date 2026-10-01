@@ -1389,3 +1389,10 @@ input,select,textarea{width:100%;max-width:100%;min-height:44px}label{overflow-w
   .pay-line { align-items: stretch; flex-direction: column; }
   .pay-line .btn { width: 100%; }
 }
+
+/* Google ile giriş düğmesi */
+.oauth-row { margin-top: 0.75rem; }
+.google-btn { display: flex; align-items: center; justify-content: center; gap: 0.55rem; width: 100%; background: #fff; color: #1f2937; border: 1px solid rgba(255,255,255,0.35); font-weight: 700; }
+.google-btn:hover:not(:disabled) { background: #f3f4f6; }
+.google-btn:disabled { opacity: 0.6; }
+.avatar-img { object-fit: cover; border-radius: 50%; }

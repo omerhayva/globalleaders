@@ -93,7 +93,7 @@ export function HeaderActions() {
       <button className={'auth-btn' + (st.me ? ' signed' : '')} id="authBtn" aria-label="Sign in"
         onClick={() => st.me ? actions.openModal('account') : actions.openModal('signin')}>
         {st.me
-          ? <><span className="avatar" style={{ background: st.me.color }}>{st.me.initials}</span>
+          ? <>{st.me.avatar ? <img className="avatar avatar-img" src={st.me.avatar} alt="" width="28" height="28" loading="lazy" referrerPolicy="no-referrer" /> : <span className="avatar" style={{ background: st.me.color }}>{st.me.initials}</span>}
             <span className="auth-name">{st.me.name.split(' ')[0]}</span></>
           : 'SIGN\u00A0IN'}
       </button>

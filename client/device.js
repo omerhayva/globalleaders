@@ -48,8 +48,20 @@ function computeSync() {
   return (hex(h1) + hex(h2) + hex(h1 ^ h2) + hex((h1 + h2) >>> 0)).slice(0, 32);
 }
 
+// Gömülü ortamlar (ve testler) cihaz kimliğini sayfadan sabitleyebilir:
+//   window.__GL_DEVICE__ = '32-hex-deger'
+// Gerçek ziyaretçide bu değer yoktur, parmak izi kullanılır.
+function overrideValue() {
+  try {
+    const ov = typeof window !== 'undefined' ? window.__GL_DEVICE__ : null;
+    return typeof ov === 'string' && /^[A-Za-z0-9_-]{8,200}$/.test(ov) ? ov : null;
+  } catch { return null; }
+}
+
 // Her zaman bir değer döner (ilk çağrıda senkron hesaplar).
 export function deviceHeader() {
+  const ov = overrideValue();
+  if (ov) return ov;
   if (!cached) { try { cached = computeSync(); } catch { cached = ''; } }
   return cached;
 }

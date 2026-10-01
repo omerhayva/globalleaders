@@ -133,6 +133,113 @@ const index = require('../server/index.js');
     ok('üyeler CSV olarak indirilebiliyor', csv.status === 200 && csvText.includes('site_test_user2') && csvText.includes('email'), `HTTP ${csv.status}`);
   }
 
+  console.log('\n6) Google ile giriş (uçtan uca, sahte Google sunucusuyla)');
+  {
+    const http = require('http');
+    // 1) Anahtar yokken: düğme hiç görünmez, başlatma ucu net hata verir.
+    const provOff = await json('/api/auth/providers');
+    ok('Google kapalıyken sağlayıcı listesi enabled=false', provOff.body && provOff.body.google && provOff.body.google.enabled === false, JSON.stringify(provOff.body));
+    const startOff = await fetch(BASE + '/api/auth/google/start');
+    ok('anahtar yokken başlatma ucu 503 döner', startOff.status === 503, `HTTP ${startOff.status}`);
+
+    // 2) Sahte Google sunucusu: authorize → token → userinfo
+    let seenTokenBody = null;
+    let fakeProfile = { sub: '109876543210987654321', email: 'google.user@example.com', email_verified: true, name: 'Google Kullanıcı', picture: 'https://lh3.googleusercontent.com/fake.png' };
+    const fake = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname === '/authorize') {
+        const redirect = u.searchParams.get('redirect_uri');
+        const state = u.searchParams.get('state');
+        if (u.searchParams.get('client_id') !== 'test-client-id') { res.statusCode = 400; return res.end('bad client'); }
+        res.writeHead(302, { Location: `${redirect}?code=FAKE-CODE-123&state=${encodeURIComponent(state)}` }).end();
+        return;
+      }
+      if (u.pathname === '/token') {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', () => {
+          seenTokenBody = new URLSearchParams(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ access_token: 'fake-access-token', token_type: 'Bearer', expires_in: 3600 }));
+        });
+        return;
+      }
+      if (u.pathname === '/userinfo') {
+        if (String(req.headers.authorization) !== 'Bearer fake-access-token') { res.statusCode = 401; return res.end('{}'); }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(fakeProfile));
+        return;
+      }
+      res.statusCode = 404; res.end();
+    });
+    await new Promise(r => fake.listen(0, '127.0.0.1', r));
+    const fakeBase = `http://127.0.0.1:${fake.address().port}`;
+    process.env.GOOGLE_CLIENT_ID = 'test-client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
+    process.env.GOOGLE_AUTH_URL = fakeBase + '/authorize';
+    process.env.GOOGLE_TOKEN_URL = fakeBase + '/token';
+    process.env.GOOGLE_USERINFO_URL = fakeBase + '/userinfo';
+    process.env.GOOGLE_REDIRECT_URI = BASE + '/api/auth/google/callback';
+
+    const provOn = await json('/api/auth/providers');
+    ok('anahtarlar girilince enabled=true', provOn.body && provOn.body.google.enabled === true, JSON.stringify(provOn.body));
+
+    // 3) Başlat: state çerezi + Google'a yönlendirme
+    const start = await fetch(BASE + '/api/auth/google/start?next=%2Fleaders', { redirect: 'manual' });
+    const startCookie = (start.headers.getSetCookie ? start.headers.getSetCookie() : []).map(c => c.split(';')[0]).join('; ');
+    const authLoc = start.headers.get('location') || '';
+    const authParams = new URL(authLoc).searchParams;
+    ok('başlatma Google yetkilendirmeye yönlendiriyor', start.status === 302 && authLoc.startsWith(fakeBase + '/authorize'), authLoc.slice(0, 90));
+    ok('yetkilendirme parametreleri doğru', authParams.get('client_id') === 'test-client-id' && authParams.get('response_type') === 'code' && /email/.test(authParams.get('scope') || '') && !!authParams.get('state'), JSON.stringify(Object.fromEntries(authParams)));
+    ok('CSRF için state çerezi veriliyor', /gl_oauth_state=/.test(startCookie), startCookie.slice(0, 60));
+
+    // 4) Sahte Google onayı → bizim callback → kullanıcı oluşur ve siteye döner
+    const approve = await fetch(authLoc, { redirect: 'manual' });
+    const cbLoc = approve.headers.get('location') || '';
+    ok('Google onayı callback adresimize dönüyor', approve.status === 302 && cbLoc.startsWith(BASE + '/api/auth/google/callback'), cbLoc.slice(0, 90));
+    const done = await fetch(cbLoc, { headers: { cookie: startCookie }, redirect: 'manual' });
+    ok('callback başarıyla /leaders?signed_in=1 adresine döner', done.status === 302 && /\/leaders\?signed_in=1$/.test(done.headers.get('location') || ''), String(done.headers.get('location')));
+    ok('token takası istemci sırrını ve doğru redirect_uri gönderiyor', seenTokenBody && seenTokenBody.get('client_secret') === 'test-client-secret' && seenTokenBody.get('code') === 'FAKE-CODE-123' && seenTokenBody.get('redirect_uri') === BASE + '/api/auth/google/callback', JSON.stringify(seenTokenBody && Object.fromEntries(seenTokenBody)));
+
+    const meCookie = (done.headers.getSetCookie ? done.headers.getSetCookie() : []).map(c => c.split(';')[0]).join('; ') || startCookie;
+    const me = await fetch(BASE + '/api/auth/me', { headers: { cookie: startCookie } });
+    const meBody = await me.json().catch(() => ({}));
+    ok('Google kullanıcısı oturum açmış görünüyor', meBody.user && meBody.user.email === 'google.user@example.com', JSON.stringify(meBody).slice(0, 120));
+    ok('profil fotoğrafı ve sağlayıcı bilgisi geliyor', meBody.user && meBody.user.provider === 'google' && /lh3\.googleusercontent\.com/.test(meBody.user.avatar || ''), JSON.stringify(meBody.user || {}).slice(0, 120));
+
+    const dbLocal2 = require('../server/db');
+    const row = dbLocal2.prepare('SELECT * FROM users WHERE google_sub=?').get('109876543210987654321');
+    ok('üye kaydı Google kimliğiyle veritabanında', !!row && row.provider === 'google' && !!row.email_verified_at && !!row.username, JSON.stringify(row ? { u: row.username, p: row.provider } : null));
+    const ev = dbLocal2.prepare(`SELECT * FROM login_events WHERE kind='login_google' ORDER BY id DESC LIMIT 1`).get();
+    ok('giriş olayı kaydedildi (login_google)', !!ev && ev.identifier === 'google.user@example.com', JSON.stringify(ev || null));
+
+    // 5) Güvenlik: state uyuşmazsa giriş yapılmaz
+    const badState = await fetch(BASE + `/api/auth/google/callback?code=FAKE-CODE-123&state=0000000000000000000000000000000000000000000000`, { headers: { cookie: startCookie }, redirect: 'manual' });
+    ok('yanlış state reddedilir (CSRF koruması)', /google_error=state/.test(badState.headers.get('location') || ''), String(badState.headers.get('location')));
+
+    // 6) Mevcut (şifreli) hesapla birleştirme: aynı e-posta ile Google girişi
+    const dbLocal3 = require('../server/db');
+    const serviceAuth2 = require('../server/services/auth');
+    dbLocal3.prepare(`INSERT INTO users (email,username,password_hash,display_name,provider,email_verified_at,avatar_color) VALUES (?,?,?,?,?,datetime('now'),?)`)
+      .run('linked@example.com', 'linked_user', serviceAuth2.hashPassword('Parola1234!'), 'Linked User', 'local', '#34d399');
+    const beforeCount = dbLocal3.prepare('SELECT COUNT(*) c FROM users').get().c;
+    fakeProfile = { sub: '555000111222333', email: 'linked@example.com', email_verified: true, name: 'Linked User', picture: 'https://lh3.googleusercontent.com/linked.png' };
+    const s2 = await fetch(BASE + '/api/auth/google/start', { redirect: 'manual' });
+    const c2 = (s2.headers.getSetCookie ? s2.headers.getSetCookie() : []).map(c => c.split(';')[0]).join('; ');
+    const a2 = await fetch(s2.headers.get('location'), { redirect: 'manual' });
+    const d2 = await fetch(a2.headers.get('location'), { headers: { cookie: c2 }, redirect: 'manual' });
+    const afterCount = dbLocal3.prepare('SELECT COUNT(*) c FROM users').get().c;
+    ok('aynı e-posta ile Google girişi YENİ üye açmıyor (hesap birleşir)', afterCount === beforeCount, `${beforeCount} → ${afterCount}`);
+    const linked = dbLocal3.prepare('SELECT * FROM users WHERE email=?').get('linked@example.com');
+    ok('mevcut hesaba Google kimliği bağlandı', !!linked && linked.google_sub === '555000111222333' && !!linked.password_hash, JSON.stringify(linked ? { sub: linked.google_sub, pw: !!linked.password_hash } : null));
+    ok('birleşen hesap Google ile giriş yapabiliyor', d2.status === 302 && /signed_in=1/.test(d2.headers.get('location') || ''), String(d2.headers.get('location')));
+    const pwLogin = await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gl-session': 'd'.repeat(32) }, body: JSON.stringify({ identifier: 'linked_user', password: 'Parola1234!' }) });
+    ok('birleşme sonrası şifreyle giriş bozulmuyor', pwLogin.status === 200, `HTTP ${pwLogin.status}`);
+
+    await new Promise(r => fake.close(r));
+    delete process.env.GOOGLE_CLIENT_ID; delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GOOGLE_AUTH_URL; delete process.env.GOOGLE_TOKEN_URL; delete process.env.GOOGLE_USERINFO_URL;
+    delete process.env.GOOGLE_REDIRECT_URI;
+  }
+
   try { fs.unlinkSync(tmpDb); } catch { }
   console.log(`\n${fail === 0 ? '✅' : '❌'} site: ${pass} geçti, ${fail} başarısız`);
   if (fail) { console.log('Başarısızlar: ' + failures.join(', ')); process.exit(1); }

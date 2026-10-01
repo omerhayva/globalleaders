@@ -276,6 +276,27 @@ export function SignInModal({ afterMsg }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
+  // Google girişi yalnızca sunucuda anahtarlar tanımlıysa gösterilir.
+  const [googleOn, setGoogleOn] = useState(null);
+  useEffect(() => { api('/api/auth/providers').then(r => setGoogleOn(!!(r && r.google && r.google.enabled))).catch(() => setGoogleOn(false)); }, []);
+  const googleGo = () => {
+    if (!googleOn) return actions.toast('Google sign-in is not enabled on this server yet (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).', 'error', 6000);
+    const next = location.pathname + location.search;
+    location.href = '/api/auth/google/start?next=' + encodeURIComponent(next);
+  };
+  const googleBtn = <div className="oauth-row">
+    <button type="button" className="btn google-btn" disabled={busy} onClick={googleGo}>
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true" style={{ flex: '0 0 auto' }}>
+        <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.5 30.2 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.8 6.1C12.3 13.2 17.7 9.5 24 9.5z" />
+        <path fill="#4285F4" d="M46.5 24.5c0-1.6-.2-3.1-.5-4.5H24v9h12.7c-.6 3-2.3 5.6-4.8 7.3l7.6 5.9c4.4-4.1 7-10.1 7-17.7z" />
+        <path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-2.9-.8-4.7s.3-3.3.8-4.7l-7.8-6.1C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.8l7.8-6.1z" />
+        <path fill="#34A853" d="M24 48c6.2 0 11.5-2 15.4-5.6l-7.6-5.9c-2.1 1.4-4.8 2.3-7.8 2.3-6.3 0-11.7-3.7-13.6-9.1l-7.8 6.1C6.5 42.6 14.6 48 24 48z" />
+      </svg>
+      <span>Continue with Google</span>
+    </button>
+    <p className="muted small center" style={{ margin: '0.5rem 0 0' }}>No password needed — Google verifies your email.</p>
+  </div>;
+
   const fail = e => actions.toast(e?.error === 'username_taken' ? 'That username is already taken.' : e?.error === 'email_taken' ? 'That email is already registered.' : e?.error === 'invalid_username' ? 'Username: 3–32 characters, letters/numbers/underscore only.' : e?.error === 'invalid_password' ? 'Password must be 8–128 characters.' : e?.error === 'email_delivery_not_configured' ? 'Email verification is not configured on the server yet.' : e?.error === 'email_delivery_failed' ? 'Verification email could not be sent. Please try again later.' : e?.error === 'account_locked' ? 'Too many failed attempts. Try again later.' : e?.message || 'Something went wrong. Please try again.', 'error');
 
   const login = async () => {
@@ -319,6 +340,7 @@ export function SignInModal({ afterMsg }) {
       <div className="field"><label>USERNAME OR EMAIL *</label><input value={identifier} onChange={e => setIdentifier(e.target.value)} maxLength="160" autoComplete="username" placeholder="yourname or you@mail.com" autoFocus /></div>
       <div className="field"><label>PASSWORD *</label><input value={password} onChange={e => setPassword(e.target.value)} type="password" maxLength="128" autoComplete="current-password" placeholder="••••••••" onKeyDown={e => { if (e.key === 'Enter') login(); }} /></div>
       <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={login}>{busy ? 'SIGNING IN…' : 'SIGN IN'}</button>
+      {googleBtn}
       <div className="auth-links"><button type="button" className="x-link" onClick={() => setMode('forgot')}>Forgot password?</button><button type="button" className="x-link" onClick={() => setMode('register')}>Create account</button></div>
     </> : mode === 'register' ? <>
       <div className="field"><label>USERNAME *</label><input value={username} onChange={e => setUsername(e.target.value.toLowerCase())} maxLength="32" autoComplete="username" placeholder="mehmet_yilmaz" autoFocus /></div>
@@ -327,7 +349,8 @@ export function SignInModal({ afterMsg }) {
       <div className="field"><label>PASSWORD *</label><input value={password} onChange={e => setPassword(e.target.value)} type="password" maxLength="128" autoComplete="new-password" placeholder="At least 8 characters" /></div>
       <div className="field"><label>REPEAT PASSWORD *</label><input value={confirm} onChange={e => setConfirm(e.target.value)} type="password" maxLength="128" autoComplete="new-password" placeholder="Repeat password" onKeyDown={e => { if (e.key === 'Enter') register(); }} /></div>
       <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={register}>{busy ? 'CREATING ACCOUNT…' : 'CREATE ACCOUNT'}</button>
-      <p className="muted small center">A verification email is required. We never need your X/Google/Facebook password.</p>
+      {googleBtn}
+      <p className="muted small center">Creating an account needs a verification email — or skip it entirely with Google.</p>
       <div className="auth-links"><button type="button" className="x-link" onClick={() => setMode('login')}>Already have an account? Sign in</button></div>
     </> : <>
       <div className="field"><label>ACCOUNT EMAIL *</label><input value={email} onChange={e => setEmail(e.target.value)} type="email" maxLength="160" autoComplete="email" placeholder="you@mail.com" autoFocus onKeyDown={e => { if (e.key === 'Enter') forgot(); }} /></div>

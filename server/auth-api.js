@@ -5,6 +5,7 @@ const { rateLimit } = require('./services/ratelimit');
 const { cleanText, safeInitials } = require('./services/sanitize');
 const auth = require('./services/auth');
 const identity = require('./services/identity');
+const google = require('./services/oauth-google');
 const { hash } = require('./services/fraud');
 
 // Kayıt/giriş olaylarını yaz: panelde "üye kayıtları ve giriş kayıtları"
@@ -24,7 +25,7 @@ const verifyMinutes = 60 * 24;
 const resetMinutes = 30;
 
 function publicUser(u) {
-  return { id: u.id, username: u.username, name: u.display_name, email: u.email, provider: 'local', email_verified: !!u.email_verified_at, x_handle: u.x_handle || null, color: u.avatar_color || '#f5b524', initials: safeInitials(u.display_name || u.username) };
+  return { id: u.id, username: u.username, name: u.display_name, email: u.email, provider: u.provider || 'local', email_verified: !!u.email_verified_at, x_handle: u.x_handle || null, avatar: u.avatar_url || null, color: u.avatar_color || '#f5b524', initials: safeInitials(u.display_name || u.username) };
 }
 function sessionUser(sessionId) { return db.prepare(`SELECT u.* FROM users u JOIN vote_sessions vs ON vs.user_id=u.id WHERE vs.session_id=? ORDER BY vs.created_at DESC LIMIT 1`).get(sessionId); }
 // Oturum açma ortak yolu: giriş anında cihazdaki bakiye HESABA taşınır.
@@ -79,6 +80,107 @@ router.post('/login', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'auth-lo
   logAuthEvent('login', req, user, identifier);
   res.json({ ok: true, user: publicUser(user), needsEmailVerification: !user.email_verified_at });
 });
+// ---------------------------------------------------------------------------
+// GOOGLE İLE GİRİŞ
+// ---------------------------------------------------------------------------
+// Tarayıcı /api/auth/google/start adresine tam sayfa yönlenir (fetch değil),
+// Google kullanıcıyı onaylar ve /api/auth/google/callback'e geri döner.
+// Böylece sayfadaki CSP (script-src 'self') bozulmaz, client secret tarayıcıya
+// hiç uğramaz.
+const OAUTH_STATE_COOKIE = 'gl_oauth_state';
+const OAUTH_NEXT_COOKIE = 'gl_oauth_next';
+const OAUTH_TTL_MS = 10 * 60 * 1000;
+
+// Yalnızca site içi yollar kabul edilir (açık yönlendirme / open-redirect yok).
+function safeNext(v) {
+  const p = String(v || '');
+  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$/.test(p)) return '/';
+  if (p.startsWith('//')) return '/';
+  return p.slice(0, 200);
+}
+const cookieOpts = req => ({
+  httpOnly: true, sameSite: 'lax', path: '/', maxAge: OAUTH_TTL_MS,
+  secure: process.env.NODE_ENV === 'production' || String(req.headers['x-forwarded-proto'] || '').includes('https')
+});
+
+router.get('/providers', (req, res) => res.json({ google: { enabled: google.configured() } }));
+
+router.get('/google/start', (req, res) => {
+  if (!google.configured()) return res.status(503).json({ error: 'google_not_configured', message: 'Google sign-in is not configured on this server.' });
+  const state = google.newState();
+  res.cookie(OAUTH_STATE_COOKIE, state, cookieOpts(req));
+  res.cookie(OAUTH_NEXT_COOKIE, safeNext(req.query.next), cookieOpts(req));
+  res.redirect(302, google.authUrl({ state, redirectUri: google.redirectUri(req) }));
+});
+
+router.get('/google/callback', async (req, res) => {
+  const next = safeNext(req.cookies && req.cookies[OAUTH_NEXT_COOKIE]);
+  const stateCookie = req.cookies && req.cookies[OAUTH_STATE_COOKIE];
+  res.clearCookie(OAUTH_STATE_COOKIE, { path: '/' });
+  res.clearCookie(OAUTH_NEXT_COOKIE, { path: '/' });
+  const back = code => `${next}${next.includes('?') ? '&' : '?'}google_error=${code}`;
+  if (!google.configured()) return res.redirect(302, back('not_configured'));
+  if (req.query.error) return res.redirect(302, back('cancelled'));
+  if (!google.stateMatches(req.query.state, stateCookie)) return res.redirect(302, back('state'));
+  const code = String(req.query.code || '');
+  if (!code) return res.redirect(302, back('state'));
+  try {
+    const tokens = await google.exchangeCode({ code, redirectUri: google.redirectUri(req) });
+    const info = await google.userInfo(tokens.access_token);
+    const user = findOrCreateGoogleUser(info);
+    attachSession(user, req.sessionId, req);
+    logAuthEvent('login_google', req, user, info.email);
+    res.redirect(302, `${next}${next.includes('?') ? '&' : '?'}signed_in=1`);
+  } catch (e) {
+    const reason = /google_no_email/.test(String(e && e.message)) ? 'no_email' : 'failed';
+    console.error('google_oauth_failed', e && e.message);
+    res.redirect(302, back(reason));
+  }
+});
+
+// Google kullanıcısını bulur ya da oluşturur.
+//  1) Daha önce Google ile girmiş  → google_sub eşleşmesi
+//  2) E-posta ile kayıtlı hesap    → hesapları birleştir (Google e-postayı
+//     kendi doğruladığı için güvenli; şifreli hesap şifresiyle de girmeye devam eder)
+//  3) Yeni hesap                   → Google adından kullanıcı adı üret
+function uniqueUsername(seed) {
+  let base = String(seed || '').toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
+  if (base.length < 3) base = 'user_' + crypto.randomBytes(3).toString('hex');
+  let cand = base, i = 1;
+  while (db.prepare('SELECT 1 FROM users WHERE username=?').get(cand)) cand = (base.slice(0, 26) + '_' + (++i)).slice(0, 32);
+  return cand;
+}
+
+function findOrCreateGoogleUser(info) {
+  const sub = String(info.sub || '').slice(0, 64);
+  if (!sub) throw new Error('google_missing_sub');
+  const email = String(info.email || '').trim().toLowerCase().slice(0, 160) || null;
+  const name = cleanText(info.name || (email ? email.split('@')[0] : ''), 60);
+  const picture = /^https:\/\//.test(String(info.picture || '')) ? String(info.picture).slice(0, 300) : null;
+
+  const bySub = db.prepare('SELECT * FROM users WHERE google_sub=?').get(sub);
+  if (bySub) {
+    if (picture && picture !== bySub.avatar_url) db.prepare('UPDATE users SET avatar_url=? WHERE id=?').run(picture, bySub.id);
+    return db.prepare('SELECT * FROM users WHERE id=?').get(bySub.id);
+  }
+  if (email) {
+    const byEmail = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+    if (byEmail) {
+      db.prepare(`UPDATE users SET google_sub=?, avatar_url=COALESCE(?, avatar_url),
+                  email_verified_at=COALESCE(email_verified_at, datetime('now')) WHERE id=?`)
+        .run(sub, picture, byEmail.id);
+      return db.prepare('SELECT * FROM users WHERE id=?').get(byEmail.id);
+    }
+  }
+  if (!email) throw new Error('google_no_email');
+  const colors = ['#f5b524', '#38bdf8', '#a78bfa', '#fb7185', '#34d399', '#f97316'];
+  const username = uniqueUsername(name || email.split('@')[0]);
+  const info2 = db.prepare(`INSERT INTO users (email,username,password_hash,display_name,provider,email_verified_at,avatar_url,google_sub,avatar_color)
+                            VALUES (?,?,NULL,?,'google',datetime('now'),?,?,?)`)
+    .run(email, username, name || username, picture, sub, colors[crypto.randomInt(colors.length)]);
+  return db.prepare('SELECT * FROM users WHERE id=?').get(info2.lastInsertRowid);
+}
+
 router.get('/me', (req, res) => { const u = sessionUser(req.sessionId); res.json(u ? { user: publicUser(u) } : {}); });
 router.post('/logout', (req, res) => { const u = sessionUser(req.sessionId); logAuthEvent('logout', req, u, null); db.prepare('UPDATE vote_sessions SET user_id=NULL WHERE session_id=?').run(req.sessionId); res.json({ ok: true }); });
 router.get('/verify-email', rateLimit({ windowMs: 10 * 60_000, max: 20, name: 'auth-verify' }), (req, res) => { const token = String(req.query.token || '').slice(0, 128); const users = db.prepare('SELECT * FROM users WHERE email_verify_token_hash IS NOT NULL').all(); const user = users.find(u => auth.tokenMatchesExpiry(token, u.email_verify_token_hash, u.email_verify_expires_at)); if (!user) return res.status(400).type('html').send('<h1>Invalid or expired verification link</h1><p>Please request a new verification email.</p>'); db.prepare('UPDATE users SET email_verified_at=datetime(\'now\'), email_verify_token_hash=NULL, email_verify_expires_at=NULL WHERE id=?').run(user.id); res.type('html').send('<h1>Email verified</h1><p>Your Global Leaders Live account is verified. You can return to the site and sign in.</p>'); });

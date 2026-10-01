@@ -139,6 +139,8 @@ addCol('leaders', 'suggested_by TEXT');
 addCol('leaders', 'name_search TEXT');
 addCol('vote_sessions', 'user_id INTEGER');
 addCol('users', 'username TEXT');
+addCol('users', 'google_sub TEXT');   // Google hesabının kalıcı kimliği (sub)
+addCol('users', 'avatar_url TEXT');   // Google profil fotoğrafı (varsa)
 addCol('users', 'password_hash TEXT');
 addCol('users', 'email_verified_at TEXT');
 addCol('users', 'email_verify_token_hash TEXT');
@@ -155,6 +157,9 @@ addCol('payments', 'fulfillment_key TEXT');
 addCol('payments', 'tx_hash TEXT');
 addCol('payments', 'verified_at TEXT');
 addCol('payments', 'verified_by TEXT');
+
+// Google hesabı tekil olmalı: aynı hesap iki kullanıcıya bağlanmasın.
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL');
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_verify_token ON users(email_verify_token_hash) WHERE email_verify_token_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(password_reset_token_hash) WHERE password_reset_token_hash IS NOT NULL;

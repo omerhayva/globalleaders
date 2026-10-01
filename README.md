@@ -42,6 +42,8 @@ Production requires the admin/fraud secrets plus a public receiving wallet:
 - `CRYPTO_WALLET_ADDRESS` — public receiving address of the cold wallet
 - `AUTO_ONCHAIN_VERIFY=1` — verify submitted transaction hashes against the chain automatically
 - `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` — optional, enables card payments (Stripe Checkout)
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — optional, enables "Continue with Google" sign-in
+  (see `GOOGLE-GIRIS-KURULUMU.md` for the 5-minute setup)
 
 See `deploy/DEPLOY.md` for the full production guide (Docker, HTTPS, webhook setup).
 

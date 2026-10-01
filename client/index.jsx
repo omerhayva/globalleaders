@@ -33,6 +33,27 @@ window.GLUI = {
 // adacık hiç render vermez, sayfa statik haliyle çalışmaya devam eder).
 initDevice(); // cihaz imzası ilk oy isteğinden önce hazır olsun
 
+// Google girişinden dönüş: sunucu ?signed_in=1 ya da ?google_error=<sebep>
+// ile geri yönlendirir. Adres çubuğunu temizleyip durumu tazeliyoruz.
+(() => {
+  try {
+    const q = new URLSearchParams(location.search);
+    const err = q.get('google_error');
+    if (!q.get('signed_in') && !err) return;
+    const clean = new URL(location.href);
+    clean.searchParams.delete('signed_in'); clean.searchParams.delete('google_error');
+    history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : '') + clean.hash);
+    if (err) {
+      const msg = { not_configured: 'Google sign-in is not enabled on this server yet.', no_email: 'Your Google account did not share an email address.', cancelled: 'Google sign-in was cancelled.', state: 'Sign-in link expired — please try again.', failed: 'Google sign-in failed. Please try again.' };
+      actions.toast('⚠ ' + (msg[err] || msg.failed), 'error', 6500);
+      return;
+    }
+    api('/api/auth/me').then(r => { if (r && r.user) { actions.setMe(r.user); actions.toast(`👑 <b>Welcome, ${esc(r.user.name)}!</b> Signed in with Google — your votes and purchases now follow this account.`, 'epic', 6500); } }).catch(() => { });
+    api('/api/session').then(actions.setSession).catch(() => { });
+    api('/api/my-votes').then(actions.setMyVotes).catch(() => { });
+  } catch { /* adres çubuğu okunamadıysa sorun değil */ }
+})();
+
 const reactRoot = createRoot(document.getElementById('react-root') || document.createElement('div'));
 reactRoot.render(
   <StrictMode>

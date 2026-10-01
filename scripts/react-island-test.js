@@ -31,6 +31,10 @@ const BASE = 'http://localhost:3000';
       // koşusu benzersiz bir user-agent gönderir; böylece önceki koşuların
       // cihaz limiti birikmez ve oy akışı deterministik kalır.
       const RUN_UA = `GL-Test/${process.pid}-${Date.now()}`;
+      // Cihaz kimliği artık oy limitlerinin anahtarı: her test koşusu YENİ bir
+      // cihaz sayılmalı, yoksa jsdom'un sabit parmak izi yüzünden önceki
+      // koşuların hakkı birikir ve oy akışı yanlış yere "limit doldu" der.
+      window.__GL_DEVICE__ = require('crypto').randomBytes(16).toString('hex');
       window.fetch = (url, opts) => fetch(url.startsWith('http') ? url : BASE + url, { ...(opts || {}), headers: { ...((opts && opts.headers) || {}), 'user-agent': RUN_UA } });
       Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: () => Promise.resolve() } });
     }
