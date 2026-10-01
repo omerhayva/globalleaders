@@ -4,6 +4,7 @@ const db = require('./db');
 const sse = require('./services/sse');
 const fraud = require('./services/fraud');
 const { recomputeRanks, dayStr } = require('./seed');
+const { fold } = require('./services/text-fold');
 
 const getSetting = k => (db.prepare('SELECT value FROM site_settings WHERE key=?').get(k) || {}).value;
 const setSetting = (k, v) => db.prepare('INSERT OR REPLACE INTO site_settings (key,value) VALUES (?,?)').run(k, String(v));
@@ -174,9 +175,14 @@ function registerShare({ sessionId, ip, leaderSlug, platform }) {
 // ---------- queries ----------
 const leaderCols = `id,slug,name,country_code,status,categories,era,years,title,bio,portrait,featured,verified,community,total_votes,rank,prev_rank`;
 
-function leaderboard({ limit = 10, offset = 0, category = null, country = null } = {}) {
+function leaderboard({ limit = 10, offset = 0, category = null, country = null, q = null } = {}) {
   let where = 'visible=1'; const args = [];
   if (country) { where += ' AND country_code=?'; args.push(country); }
+  if (q) {
+    // Aksansız arama: kullanıcı "erdogan" yazsa da "Erdoğan" bulunur.
+    const term = fold(String(q).slice(0, 40)).replace(/[%_\\]/g, ch => '\\' + ch);
+    where += " AND COALESCE(name_search, LOWER(name)) LIKE ? ESCAPE '\\'"; args.push('%' + term + '%');
+  }
   if (category && category !== 'all') {
     if (category === 'current' || category === 'historical') { where += ' AND status=?'; args.push(category); }
     else { where += ` AND categories LIKE ?`; args.push(`%\"${category}\"%`); }
@@ -189,11 +195,18 @@ function leaderboard({ limit = 10, offset = 0, category = null, country = null }
 }
 
 const stmtCountryName = db.prepare('SELECT name FROM countries WHERE code=?');
+// Sıra numarası (rank) NULL kalırsa — örn. hiç oy yokken taze kurulumda —
+// görünen liderler arasından yerinde hesaplanır. Aksi hâlde arayüzde "null"
+// yazardı. Sıralama kuralı recomputeRanks ile aynıdır: oy çokluğu, eşitlikte id.
+const stmtRankFor = db.prepare(`SELECT COUNT(*)+1 AS r FROM leaders
+  WHERE visible=1 AND (total_votes > ? OR (total_votes = ? AND id < ?))`);
+
 function decorate(r, globalTotal) {
   const spark = db.prepare('SELECT votes FROM leader_daily_stats WHERE leader_id=? ORDER BY day DESC LIMIT 7').all(r.id)
     .map(x => x.votes).reverse();
+  const rank = (r.rank == null) ? stmtRankFor.get(r.total_votes, r.total_votes, r.id).r : r.rank;
   return {
-    ...r, categories: JSON.parse(r.categories || '[]'),
+    ...r, rank, categories: JSON.parse(r.categories || '[]'),
     flag: FLAG(r.country_code),
     countryName: (stmtCountryName.get(r.country_code) || {}).name,
     pct: globalTotal ? +(100 * r.total_votes / globalTotal).toFixed(2) : 0,

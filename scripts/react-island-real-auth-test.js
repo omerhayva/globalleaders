@@ -14,7 +14,7 @@ async function waitForServer() { for (let i = 0; i < 60; i++) { try { const res 
   // The checkout flow needs a configured cold wallet. CI has no .env, so the
   // harness supplies a public test address (never a real wallet) to exercise
   // the real crypto checkout UI instead of the "not configured" fallback.
-  const child = spawn(process.execPath, ['server/index.js'], { cwd: require('path').resolve(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: '3000', PUBLIC_BASE_URL: BASE, PAYMENT_PROVIDER: process.env.PAYMENT_PROVIDER || 'cold_wallet', CRYPTO_ASSET: process.env.CRYPTO_ASSET || 'USDT', CRYPTO_NETWORK: process.env.CRYPTO_NETWORK || 'TRC20', CRYPTO_WALLET_ADDRESS: process.env.CRYPTO_WALLET_ADDRESS || 'TTestWallet0000000000000000000' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server/index.js'], { cwd: require('path').resolve(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: '3000', PUBLIC_BASE_URL: BASE, PAYMENT_PROVIDER: process.env.PAYMENT_PROVIDER || 'cold_wallet', CRYPTO_ASSET: process.env.CRYPTO_ASSET || 'USDT', CRYPTO_NETWORK: process.env.CRYPTO_NETWORK || 'TRC20', CRYPTO_WALLET_ADDRESS: process.env.CRYPTO_WALLET_ADDRESS || 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderrBuf = '';
   child.stdout.on('data', data => process.stdout.write(`[server] ${data}`));
   child.stderr.on('data', data => { stderrBuf += String(data); process.stderr.write(`[server] ${data}`); });

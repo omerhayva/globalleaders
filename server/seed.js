@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('./db');
+const { fold } = require('./services/text-fold');
 const LEADERS = require('./data/leaders-seed');
 
 const PORTRAIT_DIR = path.join(__dirname, '..', 'public', 'portraits');
@@ -38,6 +39,7 @@ const slugify = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCa
 const dayStr = (offset = 0) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
 
 function seedAll({ withDemoVotes = false } = {}) {
+  backfillNameSearch();
   const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
   const tx = db.transaction(() => {
     const insCat = db.prepare('INSERT OR REPLACE INTO categories (id,name,sort) VALUES (?,?,?)');
@@ -45,8 +47,10 @@ function seedAll({ withDemoVotes = false } = {}) {
     const codes = [...new Set(LEADERS.map(l => l.cc))];
     const insCountry = db.prepare('INSERT OR IGNORE INTO countries (code,name,anthem_title) VALUES (?,?,?)');
     codes.forEach(cc => insCountry.run(cc, regionNames.of(cc) || cc, ANTHEMS[cc] || 'National Anthem'));
-    const insLeader = db.prepare(`INSERT OR IGNORE INTO leaders (slug,name,country_code,status,categories,era,years,title,bio) VALUES (?,?,?,?,?,?,?,?,?)`);
-    LEADERS.forEach(l => insLeader.run(slugify(l.name), l.name, l.cc, l.status, JSON.stringify(l.cats), l.era, l.years, l.title, l.bio));
+    const insLeader = db.prepare(`INSERT OR IGNORE INTO leaders (slug,name,country_code,status,categories,era,years,title,bio,name_search) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    LEADERS.forEach(l => insLeader.run(slugify(l.name), l.name, l.cc, l.status, JSON.stringify(l.cats), l.era, l.years, l.title, l.bio, fold(l.name)));
+    // Daha önce eklenmiş kayıtların arama alanı boşsa doldur (idempotent).
+    db.prepare(`UPDATE leaders SET name_search=? WHERE id=? AND (name_search IS NULL OR name_search='')`);
     const insSlot = db.prepare('INSERT OR IGNORE INTO advertising_slots (id,label,price_usd) VALUES (?,?,5.0)');
     [['top-left','Top Left'],['top-right','Top Right'],['bottom-left','Bottom Left'],['bottom-right','Bottom Right']].forEach(([id,label]) => insSlot.run(id,label));
     const insSet = db.prepare('INSERT OR IGNORE INTO site_settings (key,value) VALUES (?,?)');
@@ -134,6 +138,15 @@ function seedDemoVotes() {
   recomputeRanks(true); seedRankHistory();
 }
 
+// Arama alanı boş kalan liderleri doldurur (eski veritabanları ve topluluk
+// önerileri için). Ucuz ve idempotenttir.
+function backfillNameSearch() {
+  const rows = db.prepare(`SELECT id,name FROM leaders WHERE name_search IS NULL OR name_search=''`).all();
+  const upd = db.prepare('UPDATE leaders SET name_search=? WHERE id=?');
+  for (const r of rows) upd.run(fold(r.name), r.id);
+  return rows.length;
+}
+
 function recomputeRanks(initial = false) {
   const rows = db.prepare(`SELECT id, rank FROM leaders WHERE visible=1 ORDER BY total_votes DESC, id ASC`).all();
   const upd = db.prepare('UPDATE leaders SET prev_rank = ?, rank = ? WHERE id = ?');
@@ -173,4 +186,4 @@ function resetDemoData() {
   }); tx(); seedDemoVotes();
 }
 
-module.exports = { seedAll, linkLocalMedia, seedDemoVotes, clearDemoVotes, resetDemoData, recomputeRanks, slugify, dayStr };
+module.exports = { seedAll, linkLocalMedia, seedDemoVotes, clearDemoVotes, resetDemoData, recomputeRanks, backfillNameSearch, slugify, dayStr };

@@ -127,6 +127,8 @@ addCol('anthem_purchases', 'sponsor_x TEXT');
 addCol('advertisements', 'x_handle TEXT');
 addCol('leaders', 'community INTEGER DEFAULT 0');
 addCol('leaders', 'suggested_by TEXT');
+// Aranabilir isim (aksansız/küçük harf): "erdogan" → "Erdoğan" eşleşsin diye.
+addCol('leaders', 'name_search TEXT');
 addCol('vote_sessions', 'user_id INTEGER');
 addCol('users', 'username TEXT');
 addCol('users', 'password_hash TEXT');
@@ -153,6 +155,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_purchases_payment ON ad_purchases(payme
 CREATE UNIQUE INDEX IF NOT EXISTS idx_anthem_purchases_payment ON anthem_purchases(payment_id) WHERE payment_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_fulfillment_key ON payments(fulfillment_key) WHERE fulfillment_key IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_tx_hash ON payments(tx_hash) WHERE tx_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leaders_name_search ON leaders(name_search);
 `);
 
 module.exports = db;

@@ -9,7 +9,7 @@
   const num = n => (n || 0).toLocaleString('en-US');
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const GLUI = () => window.GLUI || null; // react-app.js yüklenemezse sayfa yine okunur kalır
-  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // --- resilient session identity: cookie + localStorage-mirrored header ---
   let GLSID = null; try { GLSID = localStorage.getItem('gl_sid'); } catch {}

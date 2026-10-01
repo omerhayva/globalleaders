@@ -64,6 +64,8 @@ There is no production vote simulator and no default admin password. Do not rese
 - Advertising and national-anthem sponsorship data models with controlled uploads.
 - Payments: direct cold-wallet USDT/TRC20 transfers **verified on-chain** (existence, confirmation, recipient, asset and exact amount) plus optional Stripe Checkout card payments activated by signed webhooks.
 - Manual approval stays available as an audited fallback: it requires the observed amount and a written reason.
+- Leader search from the header: accent-insensitive ("erdogan" finds "Erdoğan") and keyboard navigable; `/leaders?q=` works without JavaScript.
+- Social share cards are generated as 1200×630 PNGs (portrait + rank + live vote count) so WhatsApp/X/Telegram previews show artwork; falls back to SVG when `sharp` is unavailable.
 - USD base pricing with locale-based display conversion.
 - HMAC-based admin session authentication using environment-only production credentials.
 
@@ -106,6 +108,8 @@ server/
   services/
     payments.js         provider abstraction: cold wallet (crypto) + Stripe Checkout (card)
     onchain.js          on-chain USDT/TRC20 verification (TronGrid)
+    graphics-og.js      PNG og:image generation (sharp) with SVG fallback
+    text-fold.js        accent-insensitive search folding (ı/ğ/ş → i/g/s)
     payment-verification.js  chain check + auto-activation orchestration
     payment-fulfillment.js   atomic, idempotent activation of paid orders
     fraud.js            anti-abuse controls

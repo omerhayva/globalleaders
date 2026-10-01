@@ -17,6 +17,9 @@ public/uploads/*
 # Derleme çıktısı (npm run build:react ile yeniden üretilir)
 # Not: public/js/react-app.js bilinçli olarak takip edilir — derleme olmadan da çalışsın diye.
 
+# Üretilen paylaşım kartları (yeniden üretilebilir önbellek)
+var/og-cache/
+
 # Sistem / editör
 .DS_Store
 Thumbs.db

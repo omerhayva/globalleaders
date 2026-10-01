@@ -11,6 +11,7 @@ const db = require('./db');
 const seed = require('./seed');
 const core = require('./core');
 const render = require('./render');
+const graphics = require('./services/graphics-og');
 const api = require('./api');
 const authApi = require('./auth-api');
 const admin = require('./admin');
@@ -20,6 +21,16 @@ if (db.prepare('SELECT COUNT(*) c FROM leaders').get().c === 0) {
   console.log('Seeding database (leaders, countries)…');
   seed.seedAll({ withDemoVotes: false });
   console.log('Seeded', db.prepare('SELECT COUNT(*) c FROM leaders').get().c, 'leaders.');
+}
+
+// Taze kurulumda (hiç oy yokken) liderlerin sırası NULL kalır; oylama
+// sayfasında "null" görünmemesi için sıralar burada bir kez hesaplanır.
+{
+  const missing = db.prepare('SELECT COUNT(*) c FROM leaders WHERE visible=1 AND rank IS NULL').get().c;
+  if (missing) { seed.recomputeRanks(true); console.log(`Ranked ${missing} leaders (initial order).`); }
+  // Aksansız arama dizini: eski kayıtlar için bir kez doldurulur (idempotent).
+  const filled = seed.backfillNameSearch();
+  if (filled) console.log(`Search index prepared for ${filled} leaders.`);
 }
 
 // Wire the licensed media that ships in public/ into the database (only when a
@@ -84,6 +95,20 @@ app.use('/api', api);
 app.use('/api/admin', admin);
 
 app.get('/og/leader/:slug.svg', (req, res) => { const svg = render.ogCard(req.params.slug); if (!svg) return res.status(404).end(); res.type('image/svg+xml').set('Cache-Control', 'public, max-age=120').send(svg); });
+
+// Sosyal önizleme kartı (PNG): WhatsApp/X/Telegram SVG göstermediği için
+// paylaşılan bağlantılarda görselin çıkmasını sağlar. sharp yoksa 404 döner
+// ve meta etiketi SVG'ye işaret eder (render.js karar verir).
+app.get('/og/leader/:slug.png', async (req, res) => {
+  if (!graphics.available()) return res.status(404).end();
+  const leader = core.leaderProfile(req.params.slug);
+  if (!leader) return res.status(404).end();
+  try {
+    const card = await graphics.leaderCardPng(leader);
+    if (!card) return res.status(404).end();
+    res.type(card.contentType).set('Cache-Control', 'public, max-age=3600, immutable').sendFile(card.file);
+  } catch (e) { console.error('og_card_failed', e && e.message); res.status(500).end(); }
+});
 app.get('/portrait/:slug.svg', (req, res) => { const svg = render.portraitSvg(req.params.slug); if (!svg) return res.status(404).end(); res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(svg); });
 
 app.get('/fragment/leaders', (req, res) => {
@@ -91,7 +116,8 @@ app.get('/fragment/leaders', (req, res) => {
   const safeOffset = Math.max(0, Math.min(100000, Number.parseInt(req.query.offset, 10) || 0));
   const country = req.query.country ? String(req.query.country).toUpperCase() : null;
   if (country && !/^[A-Z]{2}$/.test(country)) return res.status(400).json({ error: 'invalid_country' });
-  const lb = core.leaderboard({ limit: 24, offset: safeOffset, category, country });
+  const q = req.query.q ? String(req.query.q).slice(0, 40) : null;
+  const lb = core.leaderboard({ limit: 24, offset: safeOffset, category, country, q });
   const names = Object.fromEntries(db.prepare('SELECT code,name FROM countries').all().map(c => [c.code, c.name]));
   lb.rows.forEach(r => r.countryName = names[r.country_code]);
   res.json({ html: lb.rows.map(render.leaderCard).join(''), hasMore: (safeOffset + 24) < lb.total });
@@ -99,7 +125,12 @@ app.get('/fragment/leaders', (req, res) => {
 
 const send = (res, html) => html ? res.type('html').send(html) : res.status(404).type('html').send(notFound());
 app.get('/', (req, res) => send(res, render.homePage()));
-app.get('/leaders', (req, res) => { const category = String(req.query.category || 'all').slice(0, 40); const cat = db.prepare('SELECT name FROM categories WHERE id=?').get(category); send(res, render.leadersPage({ category, title: cat ? cat.name : 'All Leaders' })); });
+app.get('/leaders', (req, res) => {
+  const category = String(req.query.category || 'all').slice(0, 40);
+  const q = String(req.query.q || '').trim().slice(0, 40);
+  const cat = db.prepare('SELECT name FROM categories WHERE id=?').get(category);
+  send(res, render.leadersPage({ category, q, title: q ? `Search: ${q}` : (cat ? cat.name : 'All Leaders') }));
+});
 app.get('/history', (req, res) => send(res, render.leadersPage({ category: 'historical', title: 'Historical Leaders', nav: 'HISTORY', pathUrl: '/history' })));
 app.get('/leader/:slug', (req, res) => send(res, render.leaderPage(req.params.slug)));
 app.get('/countries', (req, res) => send(res, render.countriesPage()));

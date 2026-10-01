@@ -84,7 +84,7 @@ router.post('/leaders', (req, res) => {
   db.prepare(`INSERT OR IGNORE INTO countries (code,name,anthem_title) VALUES (?,?, 'National Anthem')`).run(cc, countryName);
   const slug = seed.slugify(name); if (db.prepare('SELECT 1 FROM leaders WHERE slug=?').get(slug)) return res.status(409).json({ error: 'slug_exists' });
   const status = ['current','historical'].includes(b.status) ? b.status : 'historical'; const categories = Array.isArray(b.categories) ? b.categories.slice(0, 12).map(x => cleanText(x, 40)) : [];
-  db.prepare(`INSERT INTO leaders (slug,name,country_code,status,categories,era,years,title,bio,visible,featured,verified) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(slug, name, cc, status, JSON.stringify(categories), cleanText(b.era, 60), cleanText(b.years, 40), cleanText(b.title, 100), cleanText(b.bio, 1200), b.visible ? 1 : 0, b.featured ? 1 : 0, b.verified ? 1 : 0);
+  db.prepare(`INSERT INTO leaders (slug,name,country_code,status,categories,era,years,title,bio,visible,featured,verified,name_search) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(slug, name, cc, status, JSON.stringify(categories), cleanText(b.era, 60), cleanText(b.years, 40), cleanText(b.title, 100), cleanText(b.bio, 1200), b.visible ? 1 : 0, b.featured ? 1 : 0, b.verified ? 1 : 0, require('./services/text-fold').fold(name));
   seed.recomputeRanks(); res.json({ ok: true, slug });
 });
 router.put('/leaders/:id', (req, res) => {
