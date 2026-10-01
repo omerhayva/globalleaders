@@ -121,4 +121,67 @@ async function leaderCardPng(leader, { baseDir } = {}) {
   return { file, contentType: 'image/png', cached: false };
 }
 
-module.exports = { available, leaderCardPng, sweepCache, CACHE_DIR };
+// ---------------------------------------------------------------------------
+// Genel site kartı: lider profili olmayan sayfalar (ana sayfa, /leaders,
+// /countries, /trending, /about, /legal) paylaşıldığında görsel çıksın diye.
+// ---------------------------------------------------------------------------
+function siteTextSvg({ title, subtitle, stats }) {
+  const t = String(title || '');
+  const size = t.length > 26 ? 58 : 72;
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#f5b524"/><stop offset="1" stop-color="#f97316"/></linearGradient>
+  </defs>
+  <g font-family="DejaVu Sans, Arial, Helvetica">
+    <text x="72" y="180" font-size="26" font-weight="bold" fill="#7dd3fc" letter-spacing="4">LIVE GLOBAL VOTING</text>
+    <text x="72" y="278" font-size="${size}" font-weight="bold" fill="#ffffff">${xml(t)}</text>
+    <text x="72" y="344" font-size="32" fill="#cbd5e1">${xml(subtitle || '')}</text>
+    <rect x="72" y="392" width="${Math.max(120, Math.min(560, String(stats || '').length * 21))}" height="66" rx="12" fill="url(#gold)" opacity="0.16"/>
+    <text x="96" y="436" font-size="30" font-weight="bold" fill="#f5b524">${xml(stats || '')}</text>
+    <text x="72" y="556" font-size="30" font-weight="bold" fill="#ffffff">VOTE NOW →</text>
+    <text x="72" y="600" font-size="26" fill="#7dd3fc">globalleaders.live</text>
+  </g>
+</svg>`);
+}
+
+async function siteCardPng({ key = 'site', title, subtitle, stats } = {}) {
+  if (!available()) return null;
+  ensureCacheDir();
+  const hash = crypto.createHash('sha1').update([key, title, subtitle, stats].join('|')).digest('hex').slice(0, 10);
+  const file = path.join(CACHE_DIR, `${key}-${hash}.png`);
+  if (fs.existsSync(file)) return { file, contentType: 'image/png', cached: true };
+  await sharp({ create: { width: 1200, height: 630, channels: 4, background: '#0b1220' } })
+    .composite([
+      { input: backgroundSvg(), top: 0, left: 0 },
+      { input: siteTextSvg({ title, subtitle, stats }), top: 0, left: 0 }
+    ])
+    .png({ compressionLevel: 9 })
+    .toFile(file);
+  try { for (const f of fs.readdirSync(CACHE_DIR)) if (f.startsWith(`${key}-`) && f !== path.basename(file)) fs.unlinkSync(path.join(CACHE_DIR, f)); } catch { }
+  return { file, contentType: 'image/png', cached: false };
+}
+
+// Aplikasyon simgesi (favicon / PWA). Tek kaynak SVG'den istenen boyutta PNG üretir.
+const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#22305a"/></linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f5b524"/><stop offset="1" stop-color="#f97316"/></linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <circle cx="256" cy="268" r="132" fill="none" stroke="url(#gold)" stroke-width="26"/>
+  <ellipse cx="256" cy="268" rx="62" ry="132" fill="none" stroke="#7dd3fc" stroke-width="16" opacity="0.85"/>
+  <path d="M124 268h264" stroke="#7dd3fc" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
+  <path d="M256 122l30 52h-60z" fill="url(#gold)"/>
+  <path d="M150 96h212l-26 40H176z" fill="url(#gold)"/>
+</svg>`;
+
+async function iconPng(size = 192) {
+  if (!available()) return null;
+  ensureCacheDir();
+  const file = path.join(CACHE_DIR, `icon-${size}.png`);
+  if (fs.existsSync(file)) return { file, contentType: 'image/png', cached: true };
+  await sharp(Buffer.from(ICON_SVG)).resize(size, size).png({ compressionLevel: 9 }).toFile(file);
+  return { file, contentType: 'image/png', cached: false };
+}
+
+module.exports = { available, leaderCardPng, siteCardPng, iconPng, sweepCache, CACHE_DIR };

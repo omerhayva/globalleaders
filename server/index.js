@@ -10,6 +10,7 @@ if (envFile.loaded) console.log(`Loaded ${envFile.loaded} variable(s) from .env`
 const db = require('./db');
 const seed = require('./seed');
 const core = require('./core');
+const num = n => Number(n || 0).toLocaleString('en-US');
 const render = require('./render');
 const graphics = require('./services/graphics-og');
 const api = require('./api');
@@ -116,6 +117,64 @@ app.get('/og/leader/:slug.png', async (req, res) => {
     res.type(card.contentType).set('Cache-Control', 'public, max-age=3600, immutable').sendFile(card.file);
   } catch (e) { console.error('og_card_failed', e && e.message); res.status(500).end(); }
 });
+// Genel site paylaşım kartı + ülke kartı: lider dışındaki sayfalar da
+// sosyal medyada görselsiz kalmasın.
+app.get('/og/site.png', async (req, res) => {
+  if (!graphics.available()) return res.status(404).end();
+  try {
+    const card = await graphics.siteCardPng({
+      key: 'site',
+      title: "WHO IS THE WORLD'S MOST INFLUENTIAL LEADER?",
+      subtitle: 'The world votes. The ranking moves — live.',
+      stats: `${num(core.globalStats().totalVotes)} votes cast so far`
+    });
+    if (!card) return res.status(404).end();
+    res.type(card.contentType).set('Cache-Control', 'public, max-age=3600').sendFile(card.file);
+  } catch (e) { console.error('og_site_failed', e && e.message); res.status(500).end(); }
+});
+app.get('/og/country/:code.png', async (req, res) => {
+  if (!graphics.available()) return res.status(404).end();
+  const code = String(req.params.code || '').toUpperCase().slice(0, 2);
+  const country = db.prepare('SELECT code,name FROM countries WHERE code=?').get(code);
+  if (!country) return res.status(404).end();
+  const agg = db.prepare(`SELECT COUNT(*) leaders, COALESCE(SUM(total_votes),0) votes FROM leaders WHERE country_code=? AND visible=1`).get(code);
+  try {
+    const card = await graphics.siteCardPng({
+      key: `country-${code.toLowerCase()}`,
+      title: country.name,
+      subtitle: 'Country ranking — every vote moves the world list.',
+      stats: `${num(agg.leaders)} leaders · ${num(agg.votes)} votes`
+    });
+    if (!card) return res.status(404).end();
+    res.type(card.contentType).set('Cache-Control', 'public, max-age=3600').sendFile(card.file);
+  } catch (e) { console.error('og_country_failed', e && e.message); res.status(500).end(); }
+});
+
+// Aplikasyon simgesi ve PWA manifesti (mobilde "ana ekrana ekle" düzgün çalışsın).
+const serveIcon = size => async (req, res) => {
+  if (!graphics.available()) return res.redirect(302, '/icon.svg');
+  try {
+    const icon = await graphics.iconPng(size);
+    if (!icon) return res.redirect(302, '/icon.svg');
+    res.type(icon.contentType).set('Cache-Control', 'public, max-age=604800, immutable').sendFile(icon.file);
+  } catch { res.redirect(302, '/icon.svg'); }
+};
+app.get('/favicon.ico', serveIcon(64));
+app.get('/apple-touch-icon.png', serveIcon(180));
+app.get('/icon-192.png', serveIcon(192));
+app.get('/icon-512.png', serveIcon(512));
+app.get('/manifest.json', (req, res) => {
+  res.type('application/manifest+json').set('Cache-Control', 'public, max-age=86400').json({
+    name: 'Global Leaders Live', short_name: 'GL Live',
+    description: "Live global ranking of the world's most influential leaders.",
+    start_url: '/', display: 'standalone', background_color: '#0b1220', theme_color: '#0b1220',
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+    ]
+  });
+});
+
 app.get('/portrait/:slug.svg', (req, res) => { const svg = render.portraitSvg(req.params.slug); if (!svg) return res.status(404).end(); res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(svg); });
 
 app.get('/fragment/leaders', (req, res) => {
