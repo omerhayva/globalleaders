@@ -27,7 +27,11 @@ const BASE = 'http://localhost:3000';
       window.EventSource = class { constructor() { } addEventListener() { } close() { } };
       window.HTMLMediaElement.prototype.play = () => Promise.resolve();
       window.scrollTo = () => { };
-      window.fetch = (url, opts) => fetch(url.startsWith('http') ? url : BASE + url, opts);
+      // Anti-abuse "cihaz" kimliği (IP + user-agent) ile hesaplanır. Her test
+      // koşusu benzersiz bir user-agent gönderir; böylece önceki koşuların
+      // cihaz limiti birikmez ve oy akışı deterministik kalır.
+      const RUN_UA = `GL-Test/${process.pid}-${Date.now()}`;
+      window.fetch = (url, opts) => fetch(url.startsWith('http') ? url : BASE + url, { ...(opts || {}), headers: { ...((opts && opts.headers) || {}), 'user-agent': RUN_UA } });
       Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: () => Promise.resolve() } });
     }
   });
@@ -138,13 +142,13 @@ const BASE = 'http://localhost:3000';
   const packs = modal && modal.querySelectorAll('.pack');
   ok(packs && packs.length === 2, 'oy paketi modalı açıldı (2 paket)');
   if (packs && packs.length === 2) {
-    packs[1].click(); await sleep(50); // 60 OY paketi seç
+    packs[1].click(); await sleep(600); // 60 OY paketi seç + niyet isteği gelsin
     const setInput = (el, value) => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(el, value);
       el.dispatchEvent(new window.Event('input', { bubbles: true }));
     };
-    const txInput = modal.querySelector('.crypto-pay-form input');
+    const txInput = modal.querySelector('.paybox input');
     ok(!!txInput, txInput ? 'soğuk cüzdan ödeme formu render edildi' : 'soğuk cüzdan ödeme formu görünmedi');
     if (txInput) { setInput(txInput, 'TESTTXHASH0000000000000000000000'); await sleep(80); }
     const buyBtn = modal.querySelector('.btn-gold.big');

@@ -4,7 +4,7 @@
   const app = $('#app');
   const api = (url, opts) => fetch('/api/admin' + url, opts ? { headers: { 'Content-Type': 'application/json' }, ...opts, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined } : undefined).then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok) throw j; return j; });
   const num = n => (n || 0).toLocaleString('en-US');
-  const esc = s => String(s ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const toast = (m, t = '') => { const el = document.createElement('div'); el.className = 'toast ' + t; el.innerHTML = m; $('#toasts').appendChild(el); setTimeout(() => el.remove(), 4000); };
 
   const SECTIONS = ['Dashboard','Leaders','Countries','Votes','Ads','Anthems','Payments','Shares & Referrals','Fraud','Sessions','Settings'];

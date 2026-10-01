@@ -1330,3 +1330,25 @@ input,select,textarea{width:100%;max-width:100%;min-height:44px}label{overflow-w
 @media(max-width:900px){.header-inner{padding:.6rem .9rem}.main-nav{display:none;position:absolute;left:.75rem;right:.75rem;top:calc(100% + .45rem);flex-direction:column;gap:.25rem;padding:.55rem;background:rgba(7,11,20,.97);border:1px solid var(--panel-border);border-radius:12px}.main-nav.open{display:flex}.main-nav a{width:100%;padding:.7rem .8rem}.nav-toggle{display:inline-flex;align-items:center;justify-content:center}.home-grid{grid-template-columns:minmax(0,1fr)}.ad-col,.side-col{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.lb-row{grid-template-columns:46px 42px minmax(0,1fr)}.lb-votes{min-width:72px}.lb-actions{grid-column:3/-1;justify-content:stretch}.lb-actions .btn{flex:1 1 0}}
 @media(max-width:640px){.brand-text{font-size:.82rem}.live-badge{font-size:.56rem;padding-inline:.42rem}.hero{padding:3rem .9rem 2rem}.hero h1{font-size:clamp(1.7rem,9vw,2.5rem)}.hero-cta{display:grid;grid-template-columns:1fr;width:min(100%,420px);margin-inline:auto}.hero-cta .btn{width:100%}.stats-band{grid-template-columns:repeat(2,minmax(0,1fr))}.stat:last-child{grid-column:1/-1}.home-grid,.cards-grid{padding-inline:.75rem}.panel{padding:.9rem}.lb-row{grid-template-columns:40px 40px minmax(0,1fr);gap:.55rem;padding:.65rem}.portrait{width:40px;height:40px}.lb-votes{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;gap:.5rem;text-align:left;padding-left:80px}.lb-actions{grid-column:1/-1}.lb-actions .btn{min-height:42px}.ad-col,.side-col,.cards-grid{grid-template-columns:1fr}.lc-actions .btn{flex:1 1 0}.page-head{padding-inline:.9rem}}
 @media(max-width:390px){.brand-text{font-size:.74rem}.votes-pill{display:none}.hero h1{font-size:1.65rem}.lb-votes{padding-left:0}.lb-actions{flex-direction:column}.lb-actions .btn{width:100%}}
+
+/* ==========================================================================
+   SADE ÖDEME (PAYBOX) KATMANI
+   Kripto ödemeyi üç net adıma indirir: tutar → adres → işlem hash'i.
+   Eski VIP ödeme kartının süsleri (chip, güvenlik damgası, uyarı bloğu)
+   burada bilinçli olarak kaldırılmıştır.
+   ========================================================================== */
+.paybox { margin-top: .9rem; }
+.pay-step { display: flex; align-items: center; gap: .5rem; font-size: .74rem; font-weight: 800; letter-spacing: .1em; color: var(--muted); margin: .95rem 0 .35rem; }
+.pay-step i { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: .68rem; background: rgba(245, 181, 36, .14); border: 1px solid rgba(245, 181, 36, .4); color: var(--gold); flex: 0 0 auto; }
+.pay-line { display: flex; align-items: center; gap: .6rem; background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .1); border-radius: 10px; padding: .55rem .7rem; min-height: 52px; }
+.pay-line-text { min-width: 0; flex: 1; }
+.pay-label { display: block; font-size: .6rem; letter-spacing: .1em; color: var(--muted); font-weight: 700; }
+.pay-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .74rem; letter-spacing: .01em; overflow-wrap: anywhere; user-select: all; word-break: break-all; }
+.pay-line .btn { flex: 0 0 auto; min-width: 64px; }
+.pay-note { font-size: .72rem; color: var(--muted); margin: .45rem 0 0; }
+.pay-note.center, .paydone .pay-note { text-align: center; }
+.paydone { padding: .4rem 0 .2rem; }
+@media (max-width: 420px) {
+  .pay-line { align-items: stretch; flex-direction: column; }
+  .pay-line .btn { width: 100%; }
+}

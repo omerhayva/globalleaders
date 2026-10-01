@@ -15,10 +15,16 @@ async function waitForServer() { for (let i = 0; i < 60; i++) { try { const res 
   // harness supplies a public test address (never a real wallet) to exercise
   // the real crypto checkout UI instead of the "not configured" fallback.
   const child = spawn(process.execPath, ['server/index.js'], { cwd: require('path').resolve(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: '3000', PUBLIC_BASE_URL: BASE, PAYMENT_PROVIDER: process.env.PAYMENT_PROVIDER || 'cold_wallet', CRYPTO_ASSET: process.env.CRYPTO_ASSET || 'USDT', CRYPTO_NETWORK: process.env.CRYPTO_NETWORK || 'TRC20', CRYPTO_WALLET_ADDRESS: process.env.CRYPTO_WALLET_ADDRESS || 'TTestWallet0000000000000000000' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderrBuf = '';
   child.stdout.on('data', data => process.stdout.write(`[server] ${data}`));
-  child.stderr.on('data', data => process.stderr.write(`[server] ${data}`));
+  child.stderr.on('data', data => { stderrBuf += String(data); process.stderr.write(`[server] ${data}`); });
   try {
     await waitForServer();
+    // Port 3000 doluysa bu test sunucusu başlayamaz ve testler YANLIŞ sunucuya
+    // (ör. açık kalmış geliştirme sunucusuna) karşı koşar. Sessizce geçme.
+    await sleep(250);
+    if (child.exitCode !== null) throw new Error('Test server exited immediately — is port 3000 already in use? Stop the running dev server before npm test.');
+    if (/EADDRINUSE/.test(stderrBuf)) throw new Error('Port 3000 is already in use — stop the running dev server before npm test.');
     let runnable = source.replace("const BASE = 'http://localhost:3000';", `const BASE = '${BASE}';`).replace(legacy, replacement);
     const reps = [
       ["lb.querySelectorAll('.lb-row').length >= 10", "lb.querySelectorAll('.new-lb-row').length >= 10"],

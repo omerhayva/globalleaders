@@ -28,6 +28,11 @@ jobs:
       - run: node --check server/services/sse.js
       - run: node --check server/services/payments.js
       - run: node --check server/services/payment-fulfillment.js
+      # Tarayıcı tarafı betikler de sözdizimi kontrolünden geçmeli: admin paneli
+      # bu kontrol olmadığı için bir kez bozuk kaçışla canlıya gitmişti.
+      - run: node --check public/js/app.js
+      - run: node --check public/js/admin.js
+      - run: node --check public/js/payment-admin.js
       - name: Apply responsive UI hardening
         run: node scripts/apply-ui-hardening.js
       - name: Commit UI hardening
