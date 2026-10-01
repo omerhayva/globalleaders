@@ -5,6 +5,18 @@ const { rateLimit } = require('./services/ratelimit');
 const { cleanText, safeInitials } = require('./services/sanitize');
 const auth = require('./services/auth');
 const identity = require('./services/identity');
+const { hash } = require('./services/fraud');
+
+// Kayıt/giriş olaylarını yaz: panelde "üye kayıtları ve giriş kayıtları"
+// listesi bu tablodan üretilir. IP ve tarayıcı ham değil, tuzlu hash olarak
+// saklanır (KVKK/GDPR açısından minimum veri).
+function logAuthEvent(kind, req, user, identifier, detail) {
+  try {
+    db.prepare(`INSERT INTO login_events (user_id,kind,identifier,ip_hash,ua_hash,detail) VALUES (?,?,?,?,?,?)`)
+      .run(user ? user.id : null, kind, String(identifier || (user && (user.email || user.username)) || '').slice(0, 160),
+        hash('ip:' + (req.ip || '')), hash('ua:' + String(req.headers['user-agent'] || '')), detail || null);
+  } catch { /* tablo yoksa sessiz geç */ }
+}
 
 const router = express.Router();
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -52,20 +64,23 @@ router.post('/register', rateLimit({ windowMs: 10 * 60_000, max: 5, name: 'auth-
   try { await sendMail({ to: email, subject: 'Verify your Global Leaders Live account', html: `<p>Welcome, ${cleanText(name, 60)}.</p><p>Verify your email to activate your account:</p><p><a href="${safeTokenUrl('/api/auth/verify-email', verifyToken)}">Verify email</a></p><p>This link expires in 24 hours.</p>` }); }
   catch (e) { db.prepare('DELETE FROM users WHERE id=?').run(user.id); return res.status(503).json({ error: e.message === 'email_delivery_not_configured' ? 'email_delivery_not_configured' : 'email_delivery_failed', message: e.message === 'email_delivery_not_configured' ? 'Email delivery is not configured on the server yet.' : 'Email delivery failed.' }); }
   attachSession(user, req.sessionId, req);
+  logAuthEvent('register', req, user, email);
   res.status(201).json({ ok: true, pendingVerification: true, user: publicUser(user), message: 'Account created. Check your email to verify your address.' });
 });
 
 router.post('/login', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'auth-login-real' }), (req, res) => {
   const identifier = String(req.body?.identifier || req.body?.username || req.body?.email || '').trim().toLowerCase().slice(0, 160), password = typeof req.body?.password === 'string' ? req.body.password : '';
   const user = db.prepare('SELECT * FROM users WHERE username=? OR email=?').get(identifier, identifier);
-  const generic = () => res.status(401).json({ error: 'invalid_credentials', message: 'Username/email or password is incorrect.' });
+  const generic = () => { logAuthEvent('login_failed', req, user || null, identifier, user ? 'wrong_password' : 'unknown_user'); return res.status(401).json({ error: 'invalid_credentials', message: 'Username/email or password is incorrect.' }); };
   if (!user || !user.password_hash) return generic();
   if (user.locked_until && Date.parse(user.locked_until) > Date.now()) return res.status(429).json({ error: 'account_locked', message: 'Too many failed attempts. Try again later.' });
   if (!auth.verifyPassword(password, user.password_hash)) { const failures = (user.failed_login_count || 0) + 1, locked = failures >= 8 ? new Date(Date.now() + 15 * 60_000).toISOString() : null; db.prepare('UPDATE users SET failed_login_count=?, locked_until=? WHERE id=?').run(failures, locked, user.id); return generic(); }
-  db.prepare('UPDATE users SET failed_login_count=0, locked_until=NULL WHERE id=?').run(user.id); attachSession(user, req.sessionId, req); res.json({ ok: true, user: publicUser(user), needsEmailVerification: !user.email_verified_at });
+  db.prepare('UPDATE users SET failed_login_count=0, locked_until=NULL WHERE id=?').run(user.id); attachSession(user, req.sessionId, req);
+  logAuthEvent('login', req, user, identifier);
+  res.json({ ok: true, user: publicUser(user), needsEmailVerification: !user.email_verified_at });
 });
 router.get('/me', (req, res) => { const u = sessionUser(req.sessionId); res.json(u ? { user: publicUser(u) } : {}); });
-router.post('/logout', (req, res) => { db.prepare('UPDATE vote_sessions SET user_id=NULL WHERE session_id=?').run(req.sessionId); res.json({ ok: true }); });
+router.post('/logout', (req, res) => { const u = sessionUser(req.sessionId); logAuthEvent('logout', req, u, null); db.prepare('UPDATE vote_sessions SET user_id=NULL WHERE session_id=?').run(req.sessionId); res.json({ ok: true }); });
 router.get('/verify-email', rateLimit({ windowMs: 10 * 60_000, max: 20, name: 'auth-verify' }), (req, res) => { const token = String(req.query.token || '').slice(0, 128); const users = db.prepare('SELECT * FROM users WHERE email_verify_token_hash IS NOT NULL').all(); const user = users.find(u => auth.tokenMatchesExpiry(token, u.email_verify_token_hash, u.email_verify_expires_at)); if (!user) return res.status(400).type('html').send('<h1>Invalid or expired verification link</h1><p>Please request a new verification email.</p>'); db.prepare('UPDATE users SET email_verified_at=datetime(\'now\'), email_verify_token_hash=NULL, email_verify_expires_at=NULL WHERE id=?').run(user.id); res.type('html').send('<h1>Email verified</h1><p>Your Global Leaders Live account is verified. You can return to the site and sign in.</p>'); });
 router.post('/resend-verification', rateLimit({ windowMs: 60 * 60_000, max: 3, name: 'auth-resend' }), async (req, res) => { const email = auth.normalizeEmail(req.body?.email), user = db.prepare('SELECT * FROM users WHERE email=?').get(email); if (!user || user.email_verified_at) return res.json({ ok: true, message: 'If the account exists and needs verification, an email has been sent.' }); const token = auth.newToken(); db.prepare('UPDATE users SET email_verify_token_hash=?, email_verify_expires_at=? WHERE id=?').run(auth.tokenHash(token), auth.expiry(verifyMinutes), user.id); try { await sendMail({ to: email, subject: 'Verify your Global Leaders Live account', html: `<p><a href="${safeTokenUrl('/api/auth/verify-email', token)}">Verify your email</a></p><p>This link expires in 24 hours.</p>` }); } catch (e) { return res.status(503).json({ error: e.message === 'email_delivery_not_configured' ? 'email_delivery_not_configured' : 'email_delivery_failed' }); } res.json({ ok: true, message: 'If the account exists and needs verification, an email has been sent.' }); });
 router.post('/forgot-password', rateLimit({ windowMs: 60 * 60_000, max: 3, name: 'auth-forgot' }), async (req, res) => { const email = auth.normalizeEmail(req.body?.email), user = db.prepare('SELECT * FROM users WHERE email=?').get(email); if (user) { const token = auth.newToken(); db.prepare('UPDATE users SET password_reset_token_hash=?, password_reset_expires_at=? WHERE id=?').run(auth.tokenHash(token), auth.expiry(resetMinutes), user.id); try { await sendMail({ to: email, subject: 'Reset your Global Leaders Live password', html: `<p>Reset your password:</p><p><a href="${safeTokenUrl('/reset-password', token)}">Reset password</a></p><p>This link expires in 30 minutes.</p>` }); } catch (e) { return res.status(503).json({ error: e.message === 'email_delivery_not_configured' ? 'email_delivery_not_configured' : 'email_delivery_failed' }); } } res.json({ ok: true, message: 'If an account exists for that email, password reset instructions have been sent.' }); });

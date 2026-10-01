@@ -104,6 +104,35 @@ const index = require('../server/index.js');
     ok(`${url} sağlıklı`, problems.length === 0, problems.join(', '));
   }
 
+  console.log('\n5) Üye kayıtları ve giriş kayıtları (admin)');
+  {
+    const adminLogin = await fetch(BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: process.env.GL_ADMIN_PASSWORD }) });
+    const cookie = (adminLogin.headers.getSetCookie ? adminLogin.headers.getSetCookie() : []).map(c => c.split(';')[0]).join('; ');
+    ok('admin girişi yapılabiliyor', adminLogin.status === 200, `HTTP ${adminLogin.status}`);
+    // Önce bir kayıt ve bir de başarısız giriş üret (olay kaydı oluşsun).
+    const reg = await fetch(BASE + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gl-session': 'f'.repeat(32), 'user-agent': 'SiteTest/1.0' }, body: JSON.stringify({ username: 'site_test_user', email: 'site-test@example.com', password: 'TestParola123!' }) });
+    const emptyEmail = (await reg.json().catch(() => ({}))).error === 'email_delivery_not_configured';
+    ok('e-posta sağlayıcısı yoksa kayıt net hata veriyor', reg.status === 503 && emptyEmail, `HTTP ${reg.status}`);
+    const dbLocal = require('../server/db');
+    const serviceAuth = require('../server/services/auth');
+    dbLocal.prepare(`INSERT INTO users (email,username,password_hash,display_name,provider,email_verified_at,avatar_color) VALUES (?,?,?,?,?,datetime('now'),?)`)
+      .run('site-test@example.com', 'site_test_user2', serviceAuth.hashPassword('TestParola123!'), 'Site Test', 'local', '#f5b524');
+    await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gl-session': 'e'.repeat(32), 'user-agent': 'SiteTest/1.0' }, body: JSON.stringify({ identifier: 'site_test_user2', password: 'yanlis' }) });
+    await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gl-session': 'e'.repeat(32), 'user-agent': 'SiteTest/1.0' }, body: JSON.stringify({ identifier: 'site_test_user2', password: 'TestParola123!' }) });
+
+    const membersRes = await fetch(BASE + '/api/admin/members', { headers: { cookie } });
+    const members = await membersRes.json().catch(() => ({}));
+    ok('üye listesi ucu çalışıyor', membersRes.status === 200 && members.stats && Array.isArray(members.members), `HTTP ${membersRes.status}`);
+    ok('üye listesinde kayıt görünüyor', (members.members || []).some(m => m.username === 'site_test_user2'), JSON.stringify(members.members || []).slice(0, 120));
+    const loginsRes = await fetch(BASE + '/api/admin/logins', { headers: { cookie } });
+    const logins = await loginsRes.json().catch(() => ({}));
+    const kinds = new Set((logins.events || []).map(e => e.kind));
+    ok('giriş kaydı ve başarısız giriş kaydı tutuluyor', kinds.has('login') && kinds.has('login_failed'), JSON.stringify(logins.counts || {}));
+    const csv = await fetch(BASE + '/api/admin/members.csv', { headers: { cookie } });
+    const csvText = await csv.text();
+    ok('üyeler CSV olarak indirilebiliyor', csv.status === 200 && csvText.includes('site_test_user2') && csvText.includes('email'), `HTTP ${csv.status}`);
+  }
+
   try { fs.unlinkSync(tmpDb); } catch { }
   console.log(`\n${fail === 0 ? '✅' : '❌'} site: ${pass} geçti, ${fail} başarısız`);
   if (fail) { console.log('Başarısızlar: ' + failures.join(', ')); process.exit(1); }

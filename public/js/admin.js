@@ -7,7 +7,7 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const toast = (m, t = '') => { const el = document.createElement('div'); el.className = 'toast ' + t; el.innerHTML = m; $('#toasts').appendChild(el); setTimeout(() => el.remove(), 4000); };
 
-  const SECTIONS = ['Dashboard','Leaders','Countries','Votes','Ads','Anthems','Payments','Shares & Referrals','Fraud','Sessions','Settings'];
+  const SECTIONS = ['Dashboard','Members','Leaders','Countries','Votes','Ads','Anthems','Payments','Shares & Referrals','Fraud','Sessions','Settings'];
   let current = 'Dashboard';
 
   async function boot() {
@@ -72,6 +72,29 @@
         </div>`;
     },
 
+    async Members(main) {
+      const d = await api('/members');
+      const s = d.stats;
+      main.innerHTML = `
+        <div class="kpis">
+          ${[['MEMBERS', num(s.total)],['NEW (24H)', num(s.today)],['EMAIL VERIFIED', num(s.verified)],['MEMBERS WHO VOTED', num(s.withVotes)],['BOUGHT VOTES', num(s.buyers)]]
+            .map(([l, v]) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`).join('')}
+        </div>
+        <div class="panel" style="margin-bottom:1rem">
+          <div style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center">
+            <input id="mq" placeholder="Search email, username or name…" style="flex:1;min-width:220px" class="fieldinput">
+            <a class="btn btn-ghost" href="/api/admin/members.csv" download>⬇ DOWNLOAD CSV</a>
+          </div>
+          <p class="muted small" style="margin:0.6rem 0 0">Bu liste sitenin üye kayıtlarıdır. CSV dosyası Excel ile açılır (UTF-8 BOM).</p>
+        </div>
+        <div class="panel" style="margin-bottom:1rem"><h2>MEMBERS</h2><div id="mtable"></div></div>`;
+      styleInput($('#mq'));
+      const draw = list => $('#mtable').innerHTML = table(['ID','User','Email','Provider','Verified','Joined','Votes','Votes left','Last vote','Last login'],
+        list.map(m => `<tr><td>${m.id}</td><td>${esc(m.username || m.display_name || '—')}</td><td>${esc(m.email || '—')}</td><td>${esc(m.provider || 'local')}</td><td>${m.email_verified_at ? '✅' : '—'}</td><td>${esc(m.created_at)}</td><td>${num(m.votes)}</td><td>${num(m.votes_left)}</td><td>${esc(m.last_vote || '—')}</td><td>${esc(m.last_login || '—')}</td></tr>`));
+      draw(d.members);
+      $('#mq').oninput = () => { const q = $('#mq').value.toLowerCase(); draw(d.members.filter(m => [m.username, m.email, m.display_name].some(v => String(v || '').toLowerCase().includes(q)))); };
+    },
+
     async Leaders(main) {
       const rows = await api('/leaders');
       main.innerHTML = `<div style="display:flex;gap:0.6rem;margin-bottom:1rem;flex-wrap:wrap"><input id="q" placeholder="Search leaders…" style="flex:1;min-width:200px" class="fieldinput"><button class="btn btn-vote" id="addL">+ ADD LEADER</button></div><div class="panel" id="ltable"></div>`;
@@ -116,7 +139,15 @@
 
     async Fraud(main) { const rows = await api('/fraud'); main.innerHTML = `<div class="panel"><h2>FRAUD EVENTS</h2>${table(['ID','Kind','Session','IP hash','Detail','Time'], rows.map(f => `<tr><td>${f.id}</td><td>${esc(f.kind)}</td><td>${esc(f.session_id)}</td><td><code>${esc(f.ip_hash)}</code></td><td>${esc(f.detail)}</td><td>${f.created_at}</td></tr>`))}</div>`; },
 
-    async Sessions(main) { const rows = await api('/sessions'); main.innerHTML = `<div class="panel"><h2>SESSIONS</h2>${table(['ID','Day','Free','Bonus earned','Bonus used','Suspended'], rows.map(s => `<tr><td><code>${s.id}</code></td><td>${s.day}</td><td>${s.free_used}</td><td>${s.bonus_earned}</td><td>${s.bonus_used}</td><td>${s.suspended ? 'YES' : 'NO'}</td></tr>`))}</div>`; },
+    async Sessions(main) {
+      const rows = await api('/sessions');
+      const logins = await api('/logins').catch(() => ({ events: [], counts: {} }));
+      const KIND = { register: '🆕 Kayıt', login: '🔑 Giriş', login_failed: '⛔ Başarısız giriş', logout: '🚪 Çıkış' };
+      main.innerHTML = `<div class="panel" style="margin-bottom:1rem"><h2>SIGN-IN RECORDS (son 300)</h2>
+          <p class="muted small">Kayıt: ${logins.counts.register || 0} · Giriş: ${logins.counts.login || 0} · Başarısız: ${logins.counts.login_failed || 0} · Çıkış: ${logins.counts.logout || 0}</p>
+          ${table(['ID','Olay','Kayıt/kullanıcı','IP (hash)','Tarayıcı (hash)','Zaman'], logins.events.map(e => `<tr><td>${e.id}</td><td>${KIND[e.kind] || esc(e.kind)}</td><td>${esc(e.identifier || e.user || '—')}</td><td><code>${esc(e.ip_hash)}</code></td><td><code>${esc(e.ua_hash)}</code></td><td>${esc(e.created_at)}</td></tr>`))}</div>
+        <div class="panel"><h2>VOTE SESSIONS</h2>${table(['ID','Day','Free','Bonus earned','Bonus used','Suspended'], rows.map(s => `<tr><td><code>${s.id}</code></td><td>${s.day}</td><td>${s.free_used}</td><td>${s.bonus_earned}</td><td>${s.bonus_used}</td><td>${s.suspended ? 'YES' : 'NO'}</td></tr>`))}</div>`;
+    },
 
     async Settings(main) {
       const s = await api('/settings');

@@ -104,6 +104,55 @@ router.put('/countries/:code', (req, res) => { const b = req.body || {}; const c
 router.post('/countries/:code/anthem-audio', (req, res) => { const code = String(req.params.code || '').toUpperCase(); if (!/^[A-Z]{2}$/.test(code)) return res.status(400).json({ error: 'invalid_country' }); const saved = uploads.saveAudio((req.body || {}).data, 'anthem-' + code.toLowerCase()); if (saved.error) return res.status(400).json(saved); db.prepare('UPDATE countries SET anthem_audio=? WHERE code=?').run(saved.path, code); res.json({ ok: true, path: saved.path }); });
 
 // ---- votes / users / fraud / moderation ----
+// ---- ÜYELER (kayıtlar) ve GİRİŞ KAYITLARI ----
+// Panelde "kim üye oldu, ne zaman, kaç oy kullandı" ve "kim giriş yaptı"
+// listeleri bu uçlardan beslenir.
+function memberRows({ q = '', limit = 500 } = {}) {
+  const like = `%${String(q).slice(0, 100)}%`;
+  return db.prepare(`
+    SELECT u.id, u.email, u.username, u.display_name, u.provider, u.email_verified_at,
+           u.created_at, u.failed_login_count, u.locked_until,
+           (SELECT COUNT(*) FROM votes v WHERE v.user_id = u.id) votes,
+           (SELECT MAX(v.created_at) FROM votes v WHERE v.user_id = u.id) last_vote,
+           (SELECT COALESCE(SUM(MAX(vs.purchased - vs.purchased_used, 0)), 0) FROM vote_sessions vs
+             WHERE vs.session_id = 'user-' || u.id) votes_left,
+           (SELECT MAX(e.created_at) FROM login_events e WHERE e.user_id = u.id AND e.kind = 'login') last_login
+    FROM users u
+    WHERE u.email LIKE ? OR u.username LIKE ? OR u.display_name LIKE ?
+    ORDER BY u.id DESC LIMIT ?`).all(like, like, like, limit);
+}
+router.get('/members', (req, res) => {
+  const q = String(req.query.q || '');
+  const rows = memberRows({ q });
+  const stats = {
+    total: db.prepare('SELECT COUNT(*) c FROM users').get().c,
+    today: db.prepare(`SELECT COUNT(*) c FROM users WHERE created_at >= datetime('now','-1 day')`).get().c,
+    verified: db.prepare('SELECT COUNT(*) c FROM users WHERE email_verified_at IS NOT NULL').get().c,
+    withVotes: db.prepare('SELECT COUNT(DISTINCT user_id) c FROM votes WHERE user_id IS NOT NULL').get().c,
+    buyers: db.prepare(`SELECT COUNT(DISTINCT identity_key) c FROM payments WHERE kind='votes' AND status='paid' AND identity_key LIKE 'user-%'`).get().c
+  };
+  res.json({ stats, members: rows });
+});
+// CSV indirme: Excel'de açılabilsin diye BOM + noktalı virgül yerine virgül,
+// virgül içeren alanlar tırnaklanır.
+router.get('/members.csv', (req, res) => {
+  const rows = memberRows({ q: String(req.query.q || ''), limit: 5000 });
+  const head = ['id', 'email', 'username', 'display_name', 'provider', 'email_verified', 'created_at', 'votes', 'votes_left', 'last_vote', 'last_login', 'failed_logins'];
+  const cell = v => { const t = v == null ? '' : String(v); return /[",\n;]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const lines = [head.join(',')].concat(rows.map(r => [r.id, r.email, r.username, r.display_name, r.provider, r.email_verified_at ? 'yes' : 'no', r.created_at, r.votes, r.votes_left, r.last_vote, r.last_login, r.failed_login_count].map(cell).join(',')));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="globalleaders-uyeler-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send('\uFEFF' + lines.join('\n') + '\n');
+});
+router.get('/logins', (req, res) => {
+  const rows = db.prepare(`SELECT e.id, e.kind, e.identifier, e.ip_hash, e.ua_hash, e.created_at,
+                                  COALESCE(u.username, u.email) AS user
+                           FROM login_events e LEFT JOIN users u ON u.id = e.user_id
+                           ORDER BY e.id DESC LIMIT 300`).all();
+  const counts = Object.fromEntries(db.prepare(`SELECT kind, COUNT(*) c FROM login_events GROUP BY kind`).all().map(r => [r.kind, r.c]));
+  res.json({ events: rows, counts });
+});
+
 router.get('/votes', (req, res) => res.json(db.prepare(`SELECT v.id, l.name leader, v.type, v.source, v.country, v.created_at FROM votes v JOIN leaders l ON l.id=v.leader_id ORDER BY v.id DESC LIMIT 100`).all()));
 router.get('/fraud', (req, res) => res.json(db.prepare('SELECT * FROM fraud_events ORDER BY id DESC LIMIT 200').all()));
 router.get('/sessions', (req, res) => res.json(db.prepare('SELECT id,day,free_used,bonus_earned,bonus_used,suspended FROM vote_sessions ORDER BY created_at DESC LIMIT 100').all()));

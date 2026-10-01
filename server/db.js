@@ -114,6 +114,13 @@ CREATE TABLE IF NOT EXISTS vote_idempotency (
   created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (session_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_vote_idempotency_created ON vote_idempotency(created_at);
+-- Kayıt / giriş / başarısız giriş olayları: panelde "kim ne zaman giriş yaptı"
+CREATE TABLE IF NOT EXISTS login_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER, kind TEXT, identifier TEXT, ip_hash TEXT, ua_hash TEXT, detail TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_login_events_time ON login_events(created_at);
 `);
 
 const addCol = (table, colDef) => {
