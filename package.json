@@ -8,7 +8,9 @@
     "build:react": "node scripts/build-react.js",
     "watch:react": "node scripts/build-react.js --watch",
     "test": "npm run test:react",
-    "test:react": "node scripts/react-island-real-auth-test.js"
+    "test:react": "node scripts/react-island-real-auth-test.js",
+    "test:payments": "node scripts/test-payments.js",
+    "test:all": "node scripts/test-payments.js && node scripts/react-island-real-auth-test.js"
   },
   "keywords": [],
   "author": "",

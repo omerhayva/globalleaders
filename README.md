@@ -39,6 +39,10 @@ Production requires the admin/fraud secrets plus a public receiving wallet:
 - `CRYPTO_ASSET=USDT`
 - `CRYPTO_NETWORK=TRC20`
 - `CRYPTO_WALLET_ADDRESS` — public receiving address of the cold wallet
+- `AUTO_ONCHAIN_VERIFY=1` — verify submitted transaction hashes against the chain automatically
+- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` — optional, enables card payments (Stripe Checkout)
+
+See `deploy/DEPLOY.md` for the full production guide (Docker, HTTPS, webhook setup).
 
 Never commit `.env`, database files, credentials, seed phrases, private keys, or wallet backups.
 
@@ -58,24 +62,35 @@ There is no production vote simulator and no default admin password. Do not rese
 - Interactive world map and dynamic leader share cards.
 - Community leader suggestions enter moderation rather than becoming immediately visible.
 - Advertising and national-anthem sponsorship data models with controlled uploads.
-- Initial payment flow uses direct cold-wallet crypto transfers.
-- Purchase submissions remain pending until the transaction is manually verified.
+- Payments: direct cold-wallet USDT/TRC20 transfers **verified on-chain** (existence, confirmation, recipient, asset and exact amount) plus optional Stripe Checkout card payments activated by signed webhooks.
+- Manual approval stays available as an audited fallback: it requires the observed amount and a written reason.
 - USD base pricing with locale-based display conversion.
 - HMAC-based admin session authentication using environment-only production credentials.
 
-## Initial payment flow: cold wallet
+## Payment flows
 
-The first payment version deliberately avoids cards, banks and third-party checkout pages.
+### Crypto (cold wallet) — proof of payment comes from the blockchain
 
-1. User selects the product or vote pack.
-2. The server creates a pending payment intent.
-3. Checkout displays the exact price, asset, network and **public cold-wallet address**.
-4. User sends the crypto from their own wallet.
-5. User pastes the transaction hash into the checkout.
-6. The payment becomes `pending_verification`.
-7. **No votes, sponsorship or advertising rights are activated before verification.**
+1. User selects the product or vote pack and picks the crypto option.
+2. The server creates a pending payment intent and shows the exact amount, asset, network and **public cold-wallet address**.
+3. User sends the crypto from their own wallet and pastes the transaction hash.
+4. The payment becomes `pending_verification` and the server asks TronGrid to prove that
+   the transaction exists, is confirmed, transfers USDT (TRC20) to our wallet and matches
+   the order amount exactly (`server/services/onchain.js`).
+5. Verified → the purchase is activated automatically (`AUTO_ONCHAIN_VERIFY=1`).
+   Not verified → the admin screen shows the exact reason (not found, wrong recipient,
+   wrong asset, amount too low, pending confirmation, network error).
+6. **No votes, sponsorship or advertising rights are activated before verification.**
+   Manual approval remains possible as an audited fallback and requires the observed
+   amount plus a written reason.
 
-This is intentionally a manual-verification first version. Automatic blockchain confirmation should be added only after the wallet/network and reconciliation design are finalized.
+### Card (Stripe Checkout) — optional, enabled by `STRIPE_SECRET_KEY`
+
+1. User picks the card option; the server creates a Stripe Checkout session and the
+   browser is redirected to Stripe's hosted page (card data never touches our server).
+2. Stripe sends a signed webhook (`/api/webhooks/stripe`). The signature is verified with
+   `STRIPE_WEBHOOK_SECRET` before anything is trusted.
+3. `checkout.session.completed` activates the purchase automatically and idempotently.
 
 ## Architecture
 
@@ -89,7 +104,10 @@ server/
   admin.js              authenticated admin API
   render.js             SSR templates and share-card SVG generation
   services/
-    payments.js         cold-wallet payment provider + provider abstraction
+    payments.js         provider abstraction: cold wallet (crypto) + Stripe Checkout (card)
+    onchain.js          on-chain USDT/TRC20 verification (TronGrid)
+    payment-verification.js  chain check + auto-activation orchestration
+    payment-fulfillment.js   atomic, idempotent activation of paid orders
     fraud.js            anti-abuse controls
     ratelimit.js        endpoint rate limiting
     sse.js              realtime event bus

@@ -64,14 +64,96 @@ function PayBox({ intent, onSubmit, busy, note = 'Your purchase is activated aft
   );
 }
 
-function PayDone({ note }) {
+// Ödeme durumu: "bildirildi → doğrulanıyor → aktifleşti" zincirini gösterir ve
+// sunucuyu yoklar; kullanıcı parayı gönderdikten sonra ne olduğunu görebilir.
+function PayDone({ intentId, note }) {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    if (!intentId) return;
+    let alive = true;
+    const tick = () => api('/api/purchase/status?intent=' + encodeURIComponent(intentId)).then(r => { if (alive) setStatus(r); }).catch(() => { });
+    tick(); const t = setInterval(tick, 6000);
+    return () => { alive = false; clearInterval(t); };
+  }, [intentId]);
+  const st = status ? status.status : 'pending_verification';
+  const icon = st === 'succeeded' ? '✅' : st === 'rejected' || st === 'failed' ? '⚠️' : st === 'paid' ? '💳' : '⏳';
+  const title = st === 'succeeded' ? 'Payment confirmed — activated!' : st === 'rejected' || st === 'failed' ? 'Payment problem' : st === 'paid' ? 'Card payment received' : 'Payment submitted';
+  const msg = (status && status.message) || note;
+  if (st === 'succeeded') { setTimeout(() => { actions.closeModal(); if (status && status.kind !== 'votes') location.reload(); }, 1500); }
   return (
     <div className="center paydone">
-      <h3>⏳ Payment submitted</h3>
-      <p className="muted small">{note}</p>
+      <h3>{icon} {title}</h3>
+      <p className="muted small">{msg}</p>
+      {status && status.explorerUrl ? <p className="muted small"><a href={status.explorerUrl} target="_blank" rel="noopener">View transaction on the explorer ↗</a></p> : null}
+      <p className="muted small">You can close this window — activation is automatic once the payment is confirmed.</p>
       <button className="btn btn-ghost" onClick={() => actions.closeModal()}>DONE</button>
     </div>
   );
+}
+
+// Kullanıcı ödeme yöntemini seçer. Yalnızca tek yöntem yapılandırılmışsa
+// seçim gizlenir ve akış sade kalır.
+function MethodChoice({ availability, method, onPick }) {
+  if (!availability) return null;
+  const crypto = availability.crypto && availability.crypto.enabled;
+  const card = availability.card && availability.card.enabled;
+  if (!(crypto && card)) return null;
+  return (
+    <div className="pay-method" role="group" aria-label="Payment method">
+      <button type="button" className={'pay-method-btn' + (method === 'crypto' ? ' sel' : '')} onClick={() => onPick('crypto')}>🪙 {availability.crypto.label || 'Crypto'}<span>USDT · TRC20 transfer</span></button>
+      <button type="button" className={'pay-method-btn' + (method === 'card' ? ' sel' : '')} onClick={() => onPick('card')}>💳 {availability.card.label}<span>Visa · Mastercard · Stripe</span></button>
+    </div>
+  );
+}
+
+// Kart yolu: tek düğme — güvenli Stripe sayfasına yönlendirir, sonrası otomatik.
+function CardBox({ intent, beforeRedirect }) {
+  const [going, setGoing] = useState(false);
+  const url = intent.clientAction && intent.clientAction.url;
+  const go = async () => {
+    if (!url) return;
+    if (beforeRedirect) { setGoing(true); let ok = false; try { ok = await beforeRedirect(); } catch { ok = false; } if (!ok) { setGoing(false); return; } }
+    else setGoing(true);
+    window.location.href = url;
+  };
+  return (
+    <div className="paybox">
+      <p className="pay-step"><i>1</i> Pay by card</p>
+      <p className="pay-note">Kart bilgileriniz Global Leaders Live sunucularına hiç girmez; ödeme Stripe’ın güvenli sayfasında alınır. Ödeme onaylandığında satın alma <b>otomatik</b> aktifleşir.</p>
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={going || !url} onClick={go}>{going ? 'YÖNLENDİRİLİYOR…' : '💳 GO TO SECURE CARD PAYMENT'}</button>
+      <p className="pay-note center">Kart bilgileri Stripe tarafından işlenir (PCI-DSS).</p>
+    </div>
+  );
+}
+
+// Demo modda (mock sağlayıcı) tek düğmeyle tamamlanan akış.
+function DemoBox({ intent, onSubmit, busy }) {
+  return (
+    <div className="paybox">
+      <p className="pay-note">Demo mod: gerçek bir tahsilat yapılmaz.</p>
+      <button className="btn btn-gold big" style={{ width: '100%' }} disabled={busy} onClick={() => onSubmit('')}>{busy ? '…' : 'COMPLETE DEMO PURCHASE'}</button>
+    </div>
+  );
+}
+
+// Stripe’dan dönüşte (?payment=success&intent=...) açılan durum penceresi.
+export function PaymentStatusModal({ intentId }) {
+  return <PayDone intentId={intentId} note="Kart ödemesi alındıysa satın alma birkaç saniye içinde otomatik aktifleşir." />;
+}
+
+// Ödeme sayfasından dönüş: ?payment=success|cancelled&intent=... adresini okur
+// ve durum modalını açar. Kart ödemesinde aktivasyon webhook ile gelir.
+export function PaymentReturnWatcher() {
+  useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    const flag = q.get('payment'); const intent = q.get('intent');
+    if (!flag || !intent) return;
+    const clean = () => { const u = new URL(location.href); u.searchParams.delete('payment'); u.searchParams.delete('intent'); history.replaceState({}, '', u.toString()); };
+    if (flag === 'success') { actions.openModal('paymentStatus', { intentId: intent }); }
+    else if (flag === 'cancelled') { actions.toast('Card payment cancelled — no charge was made.', 'error'); }
+    clean();
+  }, []);
+  return null;
 }
 
 const VOTE_ERR = { no_votes_left: 'You used your free vote today. Share for +1 or buy a pack!', too_fast: 'Whoa — slow down a little ⏱', daily_cap: 'Daily voting limit reached for your network.', device_limit: 'Daily free-vote limit reached for this device. Share for +1 or buy a pack!', suspended: 'Voting temporarily suspended for suspicious activity.', captcha_required: 'Too much activity — please try again later.', rate_limited: 'Too many requests — please slow down.', idempotency_key_required: 'Vote could not be sent — please try again.' };
@@ -107,12 +189,15 @@ export function VoteModal({ slug, reason }) {
 }
 
 export function BuyVotesModal() {
-  const [pack, setPack] = useState('votes-10'); const [intent, setIntent] = useState(null); const [busy, setBusy] = useState(false); const [submitted, setSubmitted] = useState(false);
-  const go = async txHash => { setBusy(true); try { const r = await api('/api/purchase/confirm', { method: 'POST', body: { intentId: intent.intentId, details: { txHash } } }); if (r.status === 'pending_verification') { setSubmitted(true); return; } const st0 = getState(); actions.setSession({ remaining: r.remaining, purchased: (st0.session.purchased || 0) + r.votesAdded }); actions.closeModal(); actions.toast(`⚡ <b>+${r.votesAdded} votes</b> added!`, 'epic', 5500); } catch (e) { actions.toast(e.error || 'Payment submission failed', 'error'); setBusy(false); } };
-  useEffect(() => { setIntent(null); setSubmitted(false); api('/api/purchase/intent', { method: 'POST', body: { kind: 'votes', reference: pack } }).then(setIntent).catch(e => { actions.toast(e.error || 'Could not start crypto checkout', 'error'); actions.closeModal(); }); }, [pack]);
-  if (submitted) return <PayDone note="Your vote pack is credited right after the transfer is verified." />;
-  if (!intent) return <p className="muted small center">Preparing crypto checkout…</p>;
-  return <div><h3>⚡ Buy vote packs</h3><p className="muted small">Pick a pack, pay in crypto, and your votes arrive after verification.</p><div className="pack-grid"><button className={'pack' + (pack === 'votes-10' ? ' sel' : '')} onClick={() => setPack('votes-10')}><b>10</b><span>VOTES</span><span className="price">$1.00</span></button><button className={'pack' + (pack === 'votes-60' ? ' sel' : '')} onClick={() => setPack('votes-60')}><b>60</b><span>VOTES</span><span className="price">$5.00</span></button></div><PayBox intent={intent} onSubmit={go} busy={busy} note="Votes are credited right after the transfer is verified." /></div>;
+  const [pack, setPack] = useState('votes-10'); const [method, setMethod] = useState(null); const [availability, setAvailability] = useState(null);
+  const [intent, setIntent] = useState(null); const [busy, setBusy] = useState(false); const [submitted, setSubmitted] = useState(false);
+  useEffect(() => { api('/api/payment-methods').then(a => { setAvailability(a); setMethod(a.crypto && a.crypto.enabled ? 'crypto' : (a.card && a.card.enabled ? 'card' : 'crypto')); }).catch(() => setMethod('crypto')); }, []);
+  const go = async txHash => { setBusy(true); try { const r = await api('/api/purchase/confirm', { method: 'POST', body: { intentId: intent.intentId, details: { txHash } } }); if (r.status === 'pending_verification') { setSubmitted(true); setBusy(false); return; } const st0 = getState(); actions.setSession({ remaining: r.remaining, purchased: (st0.session.purchased || 0) + r.votesAdded }); actions.closeModal(); actions.toast(`⚡ <b>+${r.votesAdded} votes</b> added!`, 'epic', 5500); } catch (e) { actions.toast(e.error || 'Payment submission failed', 'error'); setBusy(false); } };
+  useEffect(() => { if (!method) return; setIntent(null); setSubmitted(false); api('/api/purchase/intent', { method: 'POST', body: { kind: 'votes', reference: pack, method } }).then(setIntent).catch(e => { actions.toast(e.error || 'Could not start checkout', 'error'); actions.closeModal(); }); }, [pack, method]);
+  if (submitted) return <PayDone intentId={intent && intent.intentId} note="Your vote pack is credited right after the transfer is verified." />;
+  if (!intent) return <p className="muted small center">Preparing checkout…</p>;
+  const isCard = intent.paymentMethod === 'card';
+  return <div><h3>⚡ Buy vote packs</h3><p className="muted small">Pick a pack and pay by crypto or card — votes arrive after the payment is confirmed.</p><div className="pack-grid"><button className={'pack' + (pack === 'votes-10' ? ' sel' : '')} onClick={() => setPack('votes-10')}><b>10</b><span>VOTES</span><span className="price">$1.00</span></button><button className={'pack' + (pack === 'votes-60' ? ' sel' : '')} onClick={() => setPack('votes-60')}><b>60</b><span>VOTES</span><span className="price">$5.00</span></button></div><MethodChoice availability={availability} method={method} onPick={setMethod} />{isCard ? <CardBox intent={intent} /> : (intent.clientAction && intent.clientAction.type === 'demo_confirm' ? <DemoBox intent={intent} onSubmit={go} busy={busy} /> : <PayBox intent={intent} onSubmit={go} busy={busy} note="Votes are credited right after the transfer is verified." />)}</div>;
 }
 
 export function ShareModal({ slug, wantBonus = false, afterVote = false }) {
@@ -124,29 +209,48 @@ export function ShareModal({ slug, wantBonus = false, afterVote = false }) {
 }
 
 export function CheckoutModal({ kind, reference }) {
+  const [method, setMethod] = useState(null); const [availability, setAvailability] = useState(null);
   const [intent, setIntent] = useState(null); const [busy, setBusy] = useState(false); const [submitted, setSubmitted] = useState(false); const rootRef = useRef(null);
-  useEffect(() => { api('/api/purchase/intent', { method: 'POST', body: { kind, reference } }).then(setIntent).catch(e => { actions.toast(e.error || 'Could not start crypto checkout', 'error'); actions.closeModal(); }); }, [kind, reference]);
-  if (!intent) return <p className="muted small center">Preparing crypto checkout…</p>;
+  useEffect(() => { api('/api/payment-methods').then(a => { setAvailability(a); setMethod(a.crypto && a.crypto.enabled ? 'crypto' : (a.card && a.card.enabled ? 'card' : 'crypto')); }).catch(() => setMethod('crypto')); }, []);
+  useEffect(() => { if (!method) return; setIntent(null); setSubmitted(false); api('/api/purchase/intent', { method: 'POST', body: { kind, reference, method } }).then(setIntent).catch(e => { actions.toast(e.error || 'Could not start checkout', 'error'); actions.closeModal(); }); }, [kind, reference, method]);
+  if (submitted) return <PayDone intentId={intent && intent.intentId} note={kind === 'ad' ? 'Your ad appears as soon as the payment is confirmed.' : 'Your sponsor credit appears as soon as the payment is confirmed.'} />;
+  if (!intent) return <p className="muted small center">Preparing checkout…</p>;
   const t = intent.terms;
   const val = id => { const el = rootRef.current && rootRef.current.querySelector('#' + id); return el ? el.value.trim() : ''; };
+  // Form alanlarını oku; eksikse null döner ve çağıran taraf kullanıcıyı uyarır.
+  const collect = kind === 'ad'
+    ? () => { const name = val('adName'); if (!name) { actions.toast('Your name or company is required', 'error'); return null; } return { advertiser: name, x_handle: val('adX'), text: val('adText'), cta: val('adCta'), url: val('adUrl') }; }
+    : () => { const sponsor = val('anName'); if (!sponsor) { actions.toast('Your name or company is required', 'error'); return null; } return { sponsor, x_handle: val('anX') }; };
+  const withImage = async details => {
+    if (kind !== 'ad') return details;
+    const f = rootRef.current.querySelector('#adImg').files[0]; if (!f) return details;
+    if (f.size > 2 * 1024 * 1024) { actions.toast('Image too large (max 2MB)', 'error'); return null; }
+    details.image = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f); });
+    return details;
+  };
   const go = async txHash => {
-    let details;
-    if (kind === 'ad') {
-      const name = val('adName'); if (!name) return actions.toast('Your name or company is required', 'error');
-      details = { advertiser: name, x_handle: val('adX'), text: val('adText'), cta: val('adCta'), url: val('adUrl') };
-      const f = rootRef.current.querySelector('#adImg').files[0];
-      if (f) { if (f.size > 2 * 1024 * 1024) return actions.toast('Image too large (max 2MB)', 'error'); details.image = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f); }); }
-    }
-    else { const sponsor = val('anName'); if (!sponsor) return actions.toast('Your name or company is required', 'error'); details = { sponsor, x_handle: val('anX') }; }
+    const base = collect(); if (!base) return;
+    const details = await withImage(base); if (!details) return;
     details.payment = { txHash }; setBusy(true);
-    try { const r = await api('/api/purchase/confirm', { method: 'POST', body: { intentId: intent.intentId, details } }); if (r.status === 'pending_verification') { setSubmitted(true); return; } actions.closeModal(); actions.toast(`🏆 <b>Purchase complete!</b> ${esc(r.shareText || '')}`, 'epic', 6000); if (r.shareText && navigator.clipboard) navigator.clipboard.writeText(r.shareText + ' ' + location.origin).catch(() => { }); setTimeout(() => location.reload(), 2200); }
+    try { const r = await api('/api/purchase/confirm', { method: 'POST', body: { intentId: intent.intentId, details } }); if (r.status === 'pending_verification') { setSubmitted(true); setBusy(false); return; } actions.closeModal(); actions.toast(`🏆 <b>Purchase complete!</b> ${esc(r.shareText || '')}`, 'epic', 6000); if (r.shareText && navigator.clipboard) navigator.clipboard.writeText(r.shareText + ' ' + location.origin).catch(() => { }); setTimeout(() => location.reload(), 2200); }
     catch (e) { actions.toast(e.error || 'Payment submission failed', 'error'); setBusy(false); }
   };
-  if (submitted) return <PayDone note={kind === 'ad' ? 'Your ad appears as soon as the transfer is verified.' : 'Your sponsor credit appears as soon as the transfer is verified.'} />;
+  // Kart: önce reklam/sponsor bilgisi sunucuya kaydedilir, sonra Stripe'a gidilir;
+  // böylece webhook ile aktifleşen satın almada içerik kaybolmaz.
+  const beforeCard = async () => {
+    const base = collect(); if (!base) return false;
+    const details = await withImage(base); if (!details) return false;
+    try { await api('/api/purchase/details', { method: 'POST', body: { intentId: intent.intentId, details } }); return true; }
+    catch (e) { actions.toast(e.error || 'Could not save details', 'error'); return false; }
+  };
+  const isCard = intent.paymentMethod === 'card';
   const summary = kind === 'ad'
     ? <p className="muted small">{t.item.replace(/^Advertising slot: /, 'Ad space: ')} · <b>{t.price}</b> · owned until someone outbids you.</p>
     : <p className="muted small">{t.item.replace(/^National anthem sponsorship: /, 'Anthem of ')} · <b>{t.price}</b> · yours until someone takes it over.</p>;
-  return <div ref={rootRef}><h3>{kind === 'ad' ? '📢 Take over this ad space' : '🎵 Take over this anthem'}</h3>{summary}{kind === 'ad' ? <><div className="field"><label>YOUR NAME OR COMPANY *</label><input id="adName" maxLength="60" placeholder="Acme Inc." /></div><div className="field"><label>𝕏 HANDLE</label><input id="adX" maxLength="16" placeholder="@acme" /></div><div className="field"><label>SHORT TEXT</label><input id="adText" maxLength="120" placeholder="The best rockets in the galaxy 🚀" /></div><div className="field"><label>BUTTON TEXT</label><input id="adCta" maxLength="30" placeholder="Learn more" /></div><div className="field"><label>LINK (OPTIONAL)</label><input id="adUrl" type="url" placeholder="https://example.com" /></div><div className="field"><label>IMAGE (OPTIONAL, JPG/PNG/WEBP, max 2MB)</label><input id="adImg" type="file" accept="image/png,image/jpeg,image/webp" /></div></> : <><div className="field"><label>YOUR NAME OR COMPANY *</label><input id="anName" maxLength="60" placeholder="John Doe" /></div><div className="field"><label>𝕏 HANDLE (OPTIONAL)</label><input id="anX" maxLength="16" placeholder="@johndoe" /></div></>}<PayBox intent={intent} onSubmit={go} busy={busy} note="Your slot activates after the transfer is verified." /></div>;
+  const fields = kind === 'ad'
+    ? <><div className="field"><label>YOUR NAME OR COMPANY *</label><input id="adName" maxLength="60" placeholder="Acme Inc." /></div><div className="field"><label>𝕏 HANDLE</label><input id="adX" maxLength="16" placeholder="@acme" /></div><div className="field"><label>SHORT TEXT</label><input id="adText" maxLength="120" placeholder="The best rockets in the galaxy 🚀" /></div><div className="field"><label>BUTTON TEXT</label><input id="adCta" maxLength="30" placeholder="Learn more" /></div><div className="field"><label>LINK (OPTIONAL)</label><input id="adUrl" type="url" placeholder="https://example.com" /></div><div className="field"><label>IMAGE (OPTIONAL, JPG/PNG/WEBP, max 2MB)</label><input id="adImg" type="file" accept="image/png,image/jpeg,image/webp" /></div></>
+    : <><div className="field"><label>YOUR NAME OR COMPANY *</label><input id="anName" maxLength="60" placeholder="John Doe" /></div><div className="field"><label>𝕏 HANDLE (OPTIONAL)</label><input id="anX" maxLength="16" placeholder="@johndoe" /></div></>;
+  return <div ref={rootRef}><h3>{kind === 'ad' ? '📢 Take over this ad space' : '🎵 Take over this anthem'}</h3>{summary}{fields}<MethodChoice availability={availability} method={method} onPick={setMethod} />{isCard ? <CardBox intent={intent} beforeRedirect={beforeCard} /> : (intent.clientAction && intent.clientAction.type === 'demo_confirm' ? <DemoBox intent={intent} onSubmit={go} busy={busy} /> : <PayBox intent={intent} onSubmit={go} busy={busy} note="Your slot activates after the transfer is verified." />)}</div>;
 }
 
 export function MyVotesModal() { const st = useStore(); const total = (st.session.freePerDay || 0) + (st.session.bonus_earned || 0) + (st.session.purchased || 0); const mv = st.myVotes || []; return <div><h3>🗳 My votes</h3><p className="muted small">Remaining today: <b>{st.session.remaining ?? '…'}/{total}</b> · Free {st.session.freePerDay}/day · Bonus earned {st.session.bonus_earned || 0} · Purchased {st.session.purchased || 0}</p><div className="myvotes-list">{mv.length ? mv.map(v => <a className="trend-row" key={v.slug} href={`/leader/${encodeURIComponent(v.slug)}`}><span>{v.flag} {v.name}</span><b>×{v.n} · #{v.rank}</b></a>) : <p className="muted small">You haven't voted yet. Your 1 free daily vote is waiting!</p>}</div><div className="hero-cta"><button className="btn btn-gold" onClick={() => actions.openModal('buyvotes')}>⚡ BUY MORE VOTES</button></div></div>; }
@@ -229,4 +333,4 @@ export function AccountModal() {
   return <div><h3><span className="avatar big" style={{ background: me.color }}>{me.initials}</span> {me.name}</h3><p className="muted small">@{me.username} · {me.email}{me.email_verified ? ' · ✓ Email verified' : ' · ⚠ Email not verified'}</p>{!me.email_verified ? <p className="muted small">Verify your email to keep the account fully secured and recoverable.</p> : null}<div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}><button className="pack" onClick={() => actions.openModal('myvotes')}><b>🗳 MY VOTES</b><span>Every leader you've supported</span></button><button className="pack" onClick={out}><b>🚪 SIGN OUT</b><span>Your votes remain linked to this account</span></button></div></div>;
 }
 
-const MODALS = { vote: VoteModal, buyvotes: BuyVotesModal, share: ShareModal, checkout: CheckoutModal, myvotes: MyVotesModal, signin: SignInModal, account: AccountModal };
+const MODALS = { vote: VoteModal, buyvotes: BuyVotesModal, share: ShareModal, checkout: CheckoutModal, myvotes: MyVotesModal, signin: SignInModal, account: AccountModal, paymentStatus: PaymentStatusModal };

@@ -40,6 +40,9 @@ if (isProduction) {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+// Webhook gövdesi imza doğrulaması için HAM (raw) hâliyle gerekir; bu yüzden
+// JSON ayrıştırıcıdan ÖNCE yalnızca webhook yoluna raw parser bağlanır.
+app.use('/api/webhooks', express.raw({ type: '*/*', limit: '256kb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 

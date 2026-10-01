@@ -6,6 +6,7 @@ const core = require('./core');
 const sse = require('./services/sse');
 const fraud = require('./services/fraud');
 const payments = require('./services/payments');
+const paymentVerification = require('./services/payment-verification');
 const currency = require('./services/currency');
 
 const router = express.Router();
@@ -56,32 +57,86 @@ router.post('/referral', rateLimit({ windowMs: 60 * 60_000, max: 20, name: 'refe
 
 const VOTE_PACKS = { 'votes-10': { votes: 10, usd: 1.0 }, 'votes-60': { votes: 60, usd: 5.0 } };
 const mockPaymentsLive = () => core.getSetting('demo_mode') !== '1' && payments.active === 'mock';
-router.post('/purchase/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'purchase-intent' }), (req, res) => {
+router.get('/payment-methods', (req, res) => res.json(payments.availability()));
+router.post('/purchase/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'purchase-intent' }), async (req, res) => {
   if (mockPaymentsLive()) return res.status(503).json({ error: 'payment_provider_not_configured', message: 'Real payments are not configured yet.' });
-  const { kind, reference, advertiser } = req.body || {}; if (!['ad', 'anthem', 'votes'].includes(kind)) return res.status(400).json({ error: 'bad_kind' });
+  const { kind, reference, advertiser, method } = req.body || {}; if (!['ad', 'anthem', 'votes'].includes(kind)) return res.status(400).json({ error: 'bad_kind' });
+  const wanted = String(method || 'crypto').toLowerCase();
+  if (!['crypto', 'card'].includes(wanted)) return res.status(400).json({ error: 'bad_method' });
   if (kind === 'ad' && !db.prepare('SELECT 1 FROM advertising_slots WHERE id=? AND active=1').get(reference)) return res.status(404).json({ error: 'slot_not_found' }); if (kind === 'anthem' && !db.prepare('SELECT 1 FROM countries WHERE code=?').get(String(reference || '').toUpperCase())) return res.status(404).json({ error: 'country_not_found' }); if (kind === 'votes' && !VOTE_PACKS[reference]) return res.status(400).json({ error: 'pack_not_found' });
   const amountUsd = kind === 'votes' ? VOTE_PACKS[reference].usd : 5; const ccy = currency.guessCurrency(req.headers['accept-language']); let intent;
-  try { intent = payments.createIntent({ sessionId: req.sessionId, kind, reference, advertiser: cleanText(advertiser, 60), amountUsd }); } catch (e) { if (e && e.message === 'crypto_wallet_not_configured') return res.status(503).json({ error: 'crypto_wallet_not_configured', message: 'Crypto checkout is not configured yet.' }); if (e && e.message === 'unsupported_crypto_asset') return res.status(503).json({ error: 'unsupported_crypto_asset', message: 'Only USDT is supported by the initial crypto checkout.' }); throw e; }
+  const description = kind === 'votes' ? `${VOTE_PACKS[reference].votes} votes — Global Leaders Live` : kind === 'ad' ? `Ad space ${reference} — Global Leaders Live` : `National anthem ${String(reference).toUpperCase()} — Global Leaders Live`;
+  try { intent = await payments.createIntent({ method: wanted, sessionId: req.sessionId, kind, reference, advertiser: cleanText(advertiser, 60), amountUsd, baseUrl: process.env.PUBLIC_BASE_URL, description }); } catch (e) { if (e && e.message === 'crypto_wallet_not_configured') return res.status(503).json({ error: 'crypto_wallet_not_configured', message: 'Crypto checkout is not configured yet.' }); if (e && e.message === 'unsupported_crypto_asset') return res.status(503).json({ error: 'unsupported_crypto_asset', message: 'Only USDT is supported by the initial crypto checkout.' }); if (e && e.message === 'card_provider_not_configured') return res.status(503).json({ error: 'card_provider_not_configured', message: 'Card payments are not configured yet.' }); throw e; }
+  if (intent.error) return res.status(502).json({ error: intent.error, message: 'The card provider could not start a checkout session.', detail: intent.detail });
   const termsMap = { ad: { item: `Advertising slot: ${reference}`, duration: 'Slot ownership follows the published slot terms.', receives: 'Sponsored placement on Global Leaders Live.' }, anthem: { item: `National anthem sponsorship: ${reference}`, duration: 'Ownership lasts until another buyer takes over the same slot.', receives: 'Sponsored-by credit on the country and anthem pages.' }, votes: { item: `Vote pack: ${VOTE_PACKS[reference] ? VOTE_PACKS[reference].votes : ''} votes`, duration: 'Votes are credited to your session instantly and never expire.', receives: `${VOTE_PACKS[reference] ? VOTE_PACKS[reference].votes : ''} extra votes.` } };
-  res.json({ ...intent, amountUsd, priceDisplay: currency.display(amountUsd, ccy), terms: { ...termsMap[kind], price: `$${amountUsd.toFixed(2)} USD`, crypto: `${intent.cryptoAmountDisplay}`, refunds: 'Refunds follow the applicable Payment Terms.' }, demoMode: false });
+  res.json({ ...intent, method: wanted, availability: payments.availability(), amountUsd, priceDisplay: currency.display(amountUsd, ccy), terms: { ...termsMap[kind], price: `$${amountUsd.toFixed(2)} USD`, crypto: intent.cryptoAmountDisplay ? `${intent.cryptoAmountDisplay}` : null, refunds: 'Refunds follow the applicable Payment Terms.' }, demoMode: false });
+});
+
+// Satın alma detaylarını (reklam metni, görseli, sponsor adı) doğrular ve
+// görseli diske kaydeder. Aynı fonksiyon hem kripto onayında hem de kart
+// yönlendirmesinden önce çağrılır; böylece webhook ile aktifleşen kart
+// ödemesinde de reklam içeriği kaybolmaz.
+function preparePurchaseDetails(kind, raw) {
+  const d = raw || {};
+  if (kind === 'ad') {
+    const advertiser = cleanText(d.advertiser || 'Anonymous sponsor', 60) || 'Anonymous sponsor';
+    let imagePath = null;
+    if (d.image) {
+      if (String(d.image).startsWith('data:')) {
+        const saved = uploads.saveImage(d.image, 'ad-' + Date.now());
+        if (saved.error) return { error: 'bad_image', message: saved.error };
+        imagePath = saved.path;
+      } else if (/^\/uploads\/[A-Za-z0-9._-]+$/.test(String(d.image))) imagePath = String(d.image);
+    }
+    return { details: withTxHash({ advertiser, x_handle: cleanX(d.x_handle), text: cleanText(d.text, 120) || '', cta: cleanText(d.cta, 30) || 'Learn more', url: sanitizeUrl(d.url), image: imagePath }, d) };
+  }
+  if (kind === 'anthem') return { details: withTxHash({ sponsor: cleanText(d.sponsor, 60) || 'Anonymous', x_handle: cleanX(d.x_handle) }, d) };
+  return { details: withTxHash({}, d) };
+}
+// İşlem hash'i hangi ürün olursa olsun doğrulama adımına taşınmalı.
+function withTxHash(details, raw) {
+  const txHash = (raw && (raw.txHash || (raw.payment && raw.payment.txHash))) || '';
+  if (/^[A-Za-z0-9:_-]{20,180}$/.test(String(txHash))) details.txHash = String(txHash);
+  return details;
+}
+
+router.post('/purchase/details', rateLimit({ windowMs: 10 * 60_000, max: 30, name: 'purchase-details' }), (req, res) => {
+  const { intentId, details } = req.body || {};
+  const p = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(String(intentId || ''));
+  if (!p) return res.status(404).json({ error: 'unknown_intent' });
+  if (p.session_id && p.session_id !== req.sessionId) return res.status(403).json({ error: 'wrong_session' });
+  if (p.status !== 'pending') return res.status(409).json({ error: 'payment_not_pending', status: p.status });
+  const prepared = preparePurchaseDetails(p.kind, details); if (prepared.error) return res.status(400).json(prepared);
+  let meta = {}; try { meta = p.meta ? JSON.parse(p.meta) : {}; } catch { meta = {}; }
+  Object.assign(meta, prepared.details);
+  db.prepare('UPDATE payments SET meta=? WHERE id=?').run(JSON.stringify(meta), p.id);
+  res.json({ ok: true });
 });
 
 router.post('/purchase/confirm', rateLimit({ windowMs: 10 * 60_000, max: 15, name: 'purchase-confirm' }), (req, res) => {
   if (mockPaymentsLive()) return res.status(503).json({ error: 'payment_provider_not_configured', message: 'Real payments are not configured yet.' });
   const { intentId, details } = req.body || {}; const pending = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(String(intentId || '')); if (!pending) return res.status(404).json({ error: 'unknown_intent' });
   if (pending.session_id && pending.session_id !== req.sessionId) { fraud.logFraud('intent_takeover', req.sessionId, null, String(intentId || '')); return res.status(403).json({ error: 'wrong_session' }); }
-  if (pending.provider !== payments.active) return res.status(400).json({ error: 'provider_mismatch' });
-  const conf = payments.confirm(String(intentId || ''), details || {});
-  if (conf.status === 'pending_verification') return res.status(202).json({ ok: true, status: 'pending_verification', paymentId: conf.payment.id });
+  if (pending.provider === 'stripe') return res.status(400).json({ error: 'card_payments_are_confirmed_by_webhook' });
+  const prepared = preparePurchaseDetails(pending.kind, details || {}); if (prepared.error) return res.status(400).json(prepared);
+  const conf = payments.confirm(String(intentId || ''), prepared.details);
+  if (conf.status === 'pending_verification') {
+    // Otomatik zincir doğrulaması açıksa arka planda kontrol et: para gerçekten
+    // geldiyse satın alma insan müdahalesi olmadan aktifleşir.
+    if (process.env.AUTO_ONCHAIN_VERIFY === '1') {
+      paymentVerification.autoVerifyOnchain(conf.payment.id).catch(() => { });
+      return res.status(202).json({ ok: true, status: 'pending_verification', paymentId: conf.payment.id, autoCheck: true });
+    }
+    return res.status(202).json({ ok: true, status: 'pending_verification', paymentId: conf.payment.id });
+  }
   if (conf.status !== 'succeeded') return res.status(402).json({ error: conf.error || 'payment_failed' });
   const p = conf.payment; if (conf.idempotent) return res.json({ ok: true, idempotent: true });
   if (p.kind === 'ad') {
-    const slotId = p.reference; const d = details || {}; const advertiser = cleanText(d.advertiser || 'Anonymous sponsor', 60) || 'Anonymous sponsor'; const xh = cleanX(d.x_handle); let imagePath = null;
-    if (d.image) { const saved = uploads.saveImage(d.image, 'ad-' + Date.now()); if (saved.error) return res.status(400).json({ error: 'bad_image', message: saved.error }); imagePath = saved.path; }
+    const slotId = p.reference; const d = prepared.details; const advertiser = d.advertiser; const xh = d.x_handle; const imagePath = d.image || null;
     db.prepare(`UPDATE advertisements SET status='replaced' WHERE slot_id=? AND status='active'`).run(slotId); const ad = db.prepare(`INSERT INTO advertisements (slot_id,advertiser,image,text,cta,url,x_handle,starts_at,status) VALUES (?,?,?,?,?,?,?,datetime('now'),'active')`).run(slotId, advertiser, imagePath, cleanText(d.text, 120) || '', cleanText(d.cta, 30) || 'Learn more', sanitizeUrl(d.url), xh); db.prepare('INSERT INTO ad_purchases (slot_id,ad_id,payment_id,advertiser,amount_usd) VALUES (?,?,?,?,5.0)').run(slotId, ad.lastInsertRowid, p.id, advertiser); core.pushActivity('ad', `📢 ${advertiser}${xh ? ' (@' + xh + ')' : ''} took over the ${slotId.replace('-',' ')} ad space`, null, null); sse.broadcast('ad_purchased', { slotId, advertiser }); return res.json({ ok: true, kind: 'ad', slotId, advertiser, shareText: `🚀 ${advertiser} now owns a live advertising position on Global Leaders Live.` });
   }
   if (p.kind === 'anthem') {
-    const cc = String(p.reference).toUpperCase(); const sponsor = cleanText((details || {}).sponsor, 60) || 'Anonymous'; const xh = cleanX((details || {}).x_handle); const prev = db.prepare('SELECT sponsor FROM anthem_slots WHERE country_code=?').get(cc);
+    const cc = String(p.reference).toUpperCase(); const sponsor = prepared.details.sponsor; const xh = prepared.details.x_handle; const prev = db.prepare('SELECT sponsor FROM anthem_slots WHERE country_code=?').get(cc);
     db.prepare(`INSERT INTO anthem_slots (country_code,sponsor,sponsor_session,price_usd,purchased_at,sponsor_x) VALUES (?,?,?,5.0,datetime('now'),?) ON CONFLICT(country_code) DO UPDATE SET sponsor=excluded.sponsor,sponsor_session=excluded.sponsor_session,purchased_at=excluded.purchased_at,sponsor_x=excluded.sponsor_x`).run(cc, sponsor, req.sessionId, xh); db.prepare('INSERT INTO anthem_purchases (country_code,sponsor,payment_id,amount_usd,sponsor_x) VALUES (?,?,?,5.0,?)').run(cc, sponsor, p.id, xh); if (prev && prev.sponsor) db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(cc, prev.sponsor, 'replaced'); db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(cc, sponsor, 'purchased'); const cname = (db.prepare('SELECT name FROM countries WHERE code=?').get(cc) || {}).name || cc; core.pushActivity('anthem', `${core.FLAG(cc)} ${sponsor}${xh ? ' (@' + xh + ')' : ''} took over ${cname}'s national anthem`, cc, null); sse.broadcast('anthem_purchased', { country: cc, sponsor, sponsor_x: xh }); return res.json({ ok: true, kind: 'anthem', country: cc, sponsor, shareText: `${core.FLAG(cc)} I just took over ${cname}'s national anthem slot on Global Leaders Live!` });
   }
   if (p.kind === 'votes') {
@@ -90,6 +145,44 @@ router.post('/purchase/confirm', rateLimit({ windowMs: 10 * 60_000, max: 15, nam
   res.json({ ok: true });
 });
 
-router.post('/webhooks/:provider', express.raw({ type: '*/*' }), (req, res) => { const evt = payments.webhook(req.params.provider, req.body, req.headers); res.json({ received: true, handled: !!evt }); });
+router.get('/purchase/status', (req, res) => {
+  const intentId = String(req.query.intent || '');
+  const p = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId);
+  if (!p) return res.status(404).json({ error: 'unknown_intent' });
+  if (p.session_id && p.session_id !== req.sessionId) return res.status(403).json({ error: 'wrong_session' });
+  const cfg = paymentVerification.walletConfig();
+  const messages = {
+    pending: 'Ödeme bekleniyor: tutarı gönderip işlem hash’ini bildirin.',
+    pending_verification: 'Ödeme bildirildi — zincirde doğrulanıyor. Doğrulanınca satın alma otomatik aktifleşir.',
+    paid: 'Ödeme sağlayıcı tarafından alındı (kart) — aktifleştiriliyor.',
+    succeeded: 'Ödeme doğrulandı ve satın alma aktifleştirildi. 🎉',
+    rejected: 'Ödeme reddedildi. Destek ile iletişime geçin.',
+    failed: 'Ödeme başarısız oldu. Yeniden deneyebilirsiniz.'
+  };
+  res.json({
+    status: p.status, kind: p.kind, reference: p.reference, amountUsd: p.amount_usd,
+    method: p.provider === 'stripe' ? 'card' : (p.provider === 'mock' ? 'demo' : 'crypto'),
+    activated: p.status === 'succeeded' && !!p.fulfilled_at, activatedAt: p.fulfilled_at || null,
+    txHash: p.tx_hash || null,
+    explorerUrl: p.tx_hash && /^[0-9a-fA-F]{64}$/.test(p.tx_hash) && cfg.network === 'TRC20' ? require('./services/onchain').explorerUrl('TRC20', p.tx_hash) : null,
+    message: messages[p.status] || null
+  });
+});
+router.post('/webhooks/:provider', express.raw({ type: '*/*' }), async (req, res) => {
+  try {
+    const evt = await payments.webhook(req.params.provider, req.body, req.headers);
+    if (!evt) return res.status(404).json({ received: false, error: 'unknown_provider' });
+    if (evt.error === 'invalid_signature') return res.status(400).json({ received: false, error: evt.error });
+    // Kart ödemesi tahsil edildi → satın alma hemen aktifleşir.
+    if (evt.paid && evt.paymentId) {
+      const { fulfillPayment } = require('./services/payment-fulfillment');
+      const result = fulfillPayment(evt.paymentId, 'stripe_webhook');
+      const idempotent = !!(result && result.idempotent);
+      if (result && result.ok && !idempotent) sse.broadcast('payment_verified', { paymentId: evt.paymentId, kind: result.kind, provider: 'stripe' });
+      return res.json({ received: true, handled: true, activated: !!(result && result.ok && !idempotent), idempotent, kind: result && result.kind });
+    }
+    res.json({ received: true, handled: true, activated: false });
+  } catch (e) { console.error('webhook_error', e); res.status(500).json({ received: false, error: 'webhook_failed' }); }
+});
 router.get('/ads', (req, res) => { const slots = db.prepare('SELECT id,label,price_usd FROM advertising_slots WHERE active=1').all(); const ads = db.prepare(`SELECT slot_id,advertiser,image,text,cta,url,x_handle,created_at FROM advertisements WHERE status='active' AND (ends_at IS NULL OR ends_at > datetime('now')) AND (starts_at IS NULL OR starts_at <= datetime('now'))`).all(); res.json({ slots, ads: Object.fromEntries(ads.map(a => [a.slot_id, a])) }); });
 module.exports = router;

@@ -28,6 +28,9 @@ jobs:
       - run: node --check server/services/sse.js
       - run: node --check server/services/payments.js
       - run: node --check server/services/payment-fulfillment.js
+      - run: node --check server/services/payment-verification.js
+      - run: node --check server/services/onchain.js
+      - run: node --check scripts/test-payments.js
       # Tarayıcı tarafı betikler de sözdizimi kontrolünden geçmeli: admin paneli
       # bu kontrol olmadığı için bir kez bozuk kaçışla canlıya gitmişti.
       - run: node --check public/js/app.js
@@ -60,4 +63,5 @@ jobs:
           git add public/js/react-app.js
           git commit -m "build: refresh React bundle [skip ci]"
           git push
+      - run: npm run test:payments
       - run: npm test

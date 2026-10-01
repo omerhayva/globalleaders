@@ -4,7 +4,10 @@ const fs = require('fs');
 
 const DATA_DIR = path.join(__dirname, '..', 'var');
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const db = new Database(path.join(DATA_DIR, 'globalleaders.db'));
+// GL_DB_FILE lets automated tests use a throwaway database instead of var/.
+const DB_FILE = process.env.GL_DB_FILE || path.join(DATA_DIR, 'globalleaders.db');
+if (process.env.GL_DB_FILE) fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 

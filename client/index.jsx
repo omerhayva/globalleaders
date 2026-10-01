@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { actions, getState } from './store.js';
 import { api } from './api.js';
 import { Toasts, Confetti } from './ui/Toasts.jsx';
-import { ModalHost } from './ui/modals.jsx';
+import { ModalHost, PaymentReturnWatcher } from './ui/modals.jsx';
 import { HeaderActions } from './ui/HeaderActions.jsx';
 import { Leaderboard } from './ui/Leaderboard.jsx';
 import { StatsRings } from './ui/StatsRings.jsx';
@@ -36,6 +36,7 @@ reactRoot.render(
     <Toasts />
     <Confetti />
     <ModalHost />
+    <PaymentReturnWatcher />
     <HeaderActions />
   </StrictMode>
 );

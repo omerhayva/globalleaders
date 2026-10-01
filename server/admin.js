@@ -11,6 +11,7 @@ const { rateLimit } = require('./services/ratelimit');
 const uploads = require('./services/uploads');
 const { sanitizeUrl, cleanText } = require('./services/sanitize');
 const { fulfillPayment, rejectPayment } = require('./services/payment-fulfillment');
+const paymentVerification = require('./services/payment-verification');
 
 const router = express.Router();
 const SECRET = process.env.GL_ADMIN_SECRET;
@@ -121,18 +122,66 @@ router.post('/ads/image', (req, res) => { const saved = uploads.saveImage((req.b
 // ---- anthems / purchases / payments ----
 router.get('/anthems', (req, res) => res.json({ slots: db.prepare(`SELECT a.*, c.name FROM anthem_slots a JOIN countries c ON c.code=a.country_code ORDER BY a.purchased_at DESC`).all(), purchases: db.prepare('SELECT * FROM anthem_purchases ORDER BY id DESC LIMIT 50').all() }));
 router.post('/anthems/:code/clear', (req, res) => { const code = String(req.params.code || '').toUpperCase(); if (!/^[A-Z]{2}$/.test(code)) return res.status(400).json({ error: 'invalid_country' }); db.prepare('DELETE FROM anthem_slots WHERE country_code=?').run(code); db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(code, 'admin', 'cleared'); res.json({ ok: true }); });
-router.get('/payments', (req, res) => res.json(db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 100').all()));
+router.get('/payments', (req, res) => {
+  const rows = db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 100').all();
+  const cfg = paymentVerification.walletConfig();
+  const out = rows.map(r => {
+    const meta = paymentVerification.readMeta(r);
+    const last = meta.lastCheck || null;
+    return {
+      id: r.id, intentId: r.intent_id, provider: r.provider, method: r.provider === 'stripe' ? 'card' : (r.provider === 'cold_wallet' ? 'crypto' : r.provider),
+      kind: r.kind, reference: r.reference, amount_usd: r.amount_usd, currency: r.currency, status: r.status, demo: r.demo,
+      tx_hash: r.tx_hash, explorerUrl: r.tx_hash && /^[0-9a-fA-F]{64}$/.test(r.tx_hash) ? require('./services/onchain').explorerUrl(cfg.network, r.tx_hash) : null,
+      chainStatus: r.status === 'succeeded' ? 'verified'
+        : (r.provider === 'stripe' || r.provider === 'mock')
+          ? (r.status === 'paid' ? 'paid_webhook' : r.status === 'pending' ? 'webhook_wait' : r.status)
+          : (last ? (last.ok ? 'confirmed' : last.reason) : 'not_checked'),
+      chainCheckedAt: last ? last.at : null, chainMessage: last ? last.message : null, chainAmountUsd: meta.onchain ? meta.onchain.amountUsd : null,
+      verified_by: r.verified_by, verified_at: r.verified_at, fulfilled_at: r.fulfilled_at, created_at: r.created_at, session_id: r.session_id
+    };
+  });
+  res.json({ payments: out, wallet: { address: cfg.address || null, asset: cfg.asset, network: cfg.network, autoVerify: process.env.AUTO_ONCHAIN_VERIFY === '1' }, cardConfigured: !!process.env.STRIPE_SECRET_KEY });
+});
+router.post('/payments/:id/check-chain', rateLimit({ windowMs: 60_000, max: 30, name: 'payment-check-chain' }), async (req, res) => {
+  const id = Number.parseInt(req.params.id, 10); if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid_payment_id' });
+  const result = await paymentVerification.checkPaymentOnchain(id, { actor: 'admin_onchain' });
+  if (result.reason === 'payment_not_found') return res.status(404).json(result);
+  if (result.ok && result.activated) sse.broadcast('payment_verified', { paymentId: id, kind: result.detail && result.detail.kind, via: 'onchain' });
+  res.json({ ok: !!result.ok, reason: result.reason || null, message: result.message, activated: !!result.activated, onchain: result.onchain || null, wallet: paymentVerification.walletConfig(), payment: result.payment });
+});
 router.post('/payments/:id/verify', rateLimit({ windowMs: 60_000, max: 30, name: 'payment-verify' }), (req, res) => {
   const id = Number.parseInt(req.params.id, 10); if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid_payment_id' });
   const payment = db.prepare('SELECT * FROM payments WHERE id=?').get(id); if (!payment) return res.status(404).json({ error: 'payment_not_found' });
-  if (payment.provider !== 'cold_wallet') return res.status(400).json({ error: 'only_cold_wallet_can_be_verified' });
   if (payment.status === 'succeeded' && payment.fulfilled_at) return res.json({ ok: true, idempotent: true, payment });
+  const body = req.body || {};
+  const note = String(body.note || '').trim().slice(0, 300);
+
+  // --- Kart ödemesi: para sağlayıcı tarafından tahsil edilmiştir. ---
+  if (payment.provider === 'stripe' || payment.provider === 'mock') {
+    // 'paid' = Stripe imzalı webhook'u ödemeyi doğruladı; aktivasyon güvenli.
+    // 'pending' = webhook gelmedi; admin Stripe panelinde gördüyse gerekçesiyle açabilir.
+    if (payment.status !== 'paid' && payment.status !== 'pending') return res.status(409).json({ error: 'payment_not_pending', status: payment.status });
+    if (payment.status === 'pending' && note.length < 3) return res.status(422).json({ error: 'reason_required', message: 'Card payment has no confirmed webhook yet. Verify it in the Stripe dashboard and write a short reason.' });
+    const actor = payment.status === 'paid' ? 'stripe_webhook_confirmed' : 'admin_card_manual:' + note;
+    const card = fulfillPayment(id, actor);
+    if (card.error) return res.status(409).json(card);
+    sse.broadcast('payment_verified', { paymentId: id, kind: card.kind, via: payment.status === 'paid' ? 'stripe' : 'manual' });
+    return res.json({ ...card, verifiedOnChain: false, via: payment.status === 'paid' ? 'stripe' : 'manual', note: note || null });
+  }
+
+  // --- Kripto: zincir kanıtı ya da gerekçeli elle onay. ---
+  if (payment.provider !== 'cold_wallet') return res.status(400).json({ error: 'unsupported_provider' });
   if (payment.status !== 'pending_verification') return res.status(409).json({ error: 'payment_not_pending', status: payment.status });
-  const amount = Number((req.body || {}).amount);
-  const result = fulfillPayment(id, 'admin', amount);
+  const meta = paymentVerification.readMeta(payment);
+  const chained = !!(meta.lastCheck && meta.lastCheck.ok);
+  // Zincirde doğrulanmamış ödemeyi elle onaylamak mümkün, ancak gerekçe zorunlu:
+  // denetim kaydı olmadan kimse "para geldi" diyemez.
+  if (!chained && note.length < 3) return res.status(422).json({ error: 'reason_required', message: 'This payment has not been confirmed on-chain. Write a short reason (e.g. "checked in wallet, tx …") to approve manually.' });
+  const amount = chained ? meta.onchain.amountUsd : Number(body.amount);
+  const result = fulfillPayment(id, chained ? 'admin_onchain' : 'admin_manual:' + note, amount);
   if (result.error) return res.status(result.error === 'amount_mismatch' ? 422 : 409).json(result);
-  sse.broadcast('payment_verified', { paymentId: id, kind: result.kind });
-  res.json(result);
+  sse.broadcast('payment_verified', { paymentId: id, kind: result.kind, via: chained ? 'onchain' : 'manual' });
+  res.json({ ...result, verifiedOnChain: chained, note: note || null });
 });
 router.post('/payments/:id/reject', rateLimit({ windowMs: 60_000, max: 30, name: 'payment-reject' }), (req, res) => {
   const id = Number.parseInt(req.params.id, 10); if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'invalid_payment_id' });
