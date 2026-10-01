@@ -110,7 +110,7 @@ const BASE = 'http://localhost:3000';
   GLUI.openSignIn();
   await sleep(300);
   modal = document.querySelector('#modals .modal');
-  ok(!!modal && /Join the arena/.test(modal.textContent) && modal.querySelector('#authBtn') === null, 'giriş modalı');
+  ok(!!modal && /Welcome back/.test(modal.textContent) && modal.querySelector('#authBtn') === null, 'giriş modalı (gerçek hesap girişi)');
   ok(modal.querySelectorAll('.btn-social').length === 2, 'sosyal giriş düğmeleri (X/Google demo)');
   modal.querySelector('.close').click(); await sleep(50);
 
@@ -130,7 +130,7 @@ const BASE = 'http://localhost:3000';
   const mv = await GLUI.getMyVotes();
   ok(Array.isArray(mv), 'getMyVotes() liste döndürdü (' + mv.length + ' oy)');
 
-  console.log('— Uçtan uca akış: paket satın alma (React modalı) → oy —');
+  console.log('— Uçtan uca akış: kripto soğuk cüzdan ödemesi (React modalı) —');
   modal.querySelector('.close').click(); await sleep(50);
   GLUI.openBuyVotes();
   await sleep(400);
@@ -139,14 +139,22 @@ const BASE = 'http://localhost:3000';
   ok(packs && packs.length === 2, 'oy paketi modalı açıldı (2 paket)');
   if (packs && packs.length === 2) {
     packs[1].click(); await sleep(50); // 60 OY paketi seç
+    const setInput = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(el, value);
+      el.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+    const txInput = modal.querySelector('.crypto-pay-form input');
+    ok(!!txInput, txInput ? 'soğuk cüzdan ödeme formu render edildi' : 'soğuk cüzdan ödeme formu görünmedi');
+    if (txInput) { setInput(txInput, 'TESTTXHASH0000000000000000000000'); await sleep(80); }
     const buyBtn = modal.querySelector('.btn-gold.big');
-    buyBtn.click();
-    await sleep(900); // intent + confirm
-    const pillAfter = document.querySelector('#votesPill');
-    const bought = /\+60|votes added/i.test(document.body.textContent) || /60/.test(pillAfter ? pillAfter.textContent : '');
-    ok(bought || limited(), bought
-      ? 'paket satın alındı (bildirim/hap güncellendi: "' + (pillAfter ? pillAfter.textContent : '-') + '")'
-      : 'intent hız sınırı devrede — satın alma reddedildi (koruma), React akışı yürüdü');
+    ok(!!buyBtn && !buyBtn.disabled, 'ödeme gönderme düğmesi işlem hash’i ile etkinleşti');
+    if (buyBtn && !buyBtn.disabled) buyBtn.click();
+    await sleep(1000); // intent + confirm
+    const pendingMsg = /Payment submitted|pending verification|verified/i.test(document.body.textContent);
+    ok(pendingMsg || limited(), pendingMsg
+      ? 'ödeme gönderildi → manuel doğrulama bekliyor (kripto akışı uçtan uca çalıştı)'
+      : 'intent hız sınırı devrede — ödeme reddedildi (koruma), React akışı yürüdü');
   }
 
   console.log('— Uçtan uca oy akışı (React modalından) —');

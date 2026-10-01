@@ -11,7 +11,10 @@ const BASE = 'http://127.0.0.1:3000';
 async function waitForServer() { for (let i = 0; i < 60; i++) { try { const res = await fetch(BASE + '/'); if (res.ok) return; } catch (_) {} await sleep(250); } throw new Error('Local test server did not become ready on port 3000.'); }
 
 (async () => {
-  const child = spawn(process.execPath, ['server/index.js'], { cwd: require('path').resolve(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: '3000', PUBLIC_BASE_URL: BASE }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // The checkout flow needs a configured cold wallet. CI has no .env, so the
+  // harness supplies a public test address (never a real wallet) to exercise
+  // the real crypto checkout UI instead of the "not configured" fallback.
+  const child = spawn(process.execPath, ['server/index.js'], { cwd: require('path').resolve(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: '3000', PUBLIC_BASE_URL: BASE, PAYMENT_PROVIDER: process.env.PAYMENT_PROVIDER || 'cold_wallet', CRYPTO_ASSET: process.env.CRYPTO_ASSET || 'USDT', CRYPTO_NETWORK: process.env.CRYPTO_NETWORK || 'TRC20', CRYPTO_WALLET_ADDRESS: process.env.CRYPTO_WALLET_ADDRESS || 'TTestWallet0000000000000000000' }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', data => process.stdout.write(`[server] ${data}`));
   child.stderr.on('data', data => process.stderr.write(`[server] ${data}`));
   try {
@@ -23,6 +26,7 @@ async function waitForServer() { for (let i = 0; i < 60; i++) { try { const res 
       ["lb.querySelector('.lb-row')", "lb.querySelector('.new-lb-row')"],
       ["first.querySelectorAll('.lb-rank, .portrait, .lb-info, .lb-votes, .spark, .lb-actions').length === 6", "first.querySelectorAll('.new-rank-column, .new-portrait-wrap, .new-lb-info, .new-vote-stat, .new-trend, .new-actions').length === 6"],
       ["first.querySelector('.lb-country')", "first.querySelector('.new-lb-country')"],
+      ["first.querySelector('.lb-country img')", "first.querySelector('.new-lb-country img')"],
       ["document.querySelector('#leaderboard .lb-row .lb-power i')", "document.querySelector('#leaderboard .new-lb-row .new-power-fill')"],
       ["document.querySelector('#leaderboard .lb-row[data-rank=\"1\"]')", "document.querySelector('#leaderboard .new-lb-row[data-rank=\"1\"]')"],
       ["rank1.querySelector('.rank-num.medal.m1')", "rank1.querySelector('.new-rank.gold, .champion-ring')"],

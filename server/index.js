@@ -3,6 +3,10 @@ const path = require('path');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
 
+const { loadEnv } = require('./env');
+const envFile = loadEnv();
+if (envFile.loaded) console.log(`Loaded ${envFile.loaded} variable(s) from .env`);
+
 const db = require('./db');
 const seed = require('./seed');
 const core = require('./core');
@@ -16,6 +20,13 @@ if (db.prepare('SELECT COUNT(*) c FROM leaders').get().c === 0) {
   console.log('Seeding database (leaders, countries)…');
   seed.seedAll({ withDemoVotes: false });
   console.log('Seeded', db.prepare('SELECT COUNT(*) c FROM leaders').get().c, 'leaders.');
+}
+
+// Wire the licensed media that ships in public/ into the database (only when a
+// column is still empty, so admin uploads and remote URLs are never touched).
+const media = seed.linkLocalMedia();
+if (media.portraits || media.anthems) {
+  console.log(`Linked local media: ${media.portraits} portrait(s), ${media.anthems} anthem recording(s).`);
 }
 
 const isProduction = process.env.NODE_ENV === 'production';

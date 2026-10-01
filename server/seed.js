@@ -1,7 +1,14 @@
 // Seeding: countries, categories, leaders and production-safe defaults.
 // Demo vote helpers remain available only as local development utilities.
+const fs = require('fs');
+const path = require('path');
 const db = require('./db');
 const LEADERS = require('./data/leaders-seed');
+
+const PORTRAIT_DIR = path.join(__dirname, '..', 'public', 'portraits');
+const ANTHEM_DIR = path.join(__dirname, '..', 'public', 'anthems');
+const IMAGE_EXT = /\.(jpe?g|png|webp|gif|avif)$/i;
+const AUDIO_EXT = /\.(mp3|ogg|oga|opus|wav|m4a)$/i;
 
 const ANTHEMS = {
   TR:'İstiklal Marşı', US:'The Star-Spangled Banner', GB:'God Save the King', FR:'La Marseillaise',
@@ -49,6 +56,50 @@ function seedAll({ withDemoVotes = false } = {}) {
     if (withDemoVotes) seedDemoVotes();
   });
   tx();
+}
+
+// The repository ships the licensed portrait/anthem media under public/, but the
+// database only learns about them when the fetch/localize scripts run. This wires
+// the already-committed local files into empty DB columns on boot so a fresh
+// install (or a restored database) shows real portraits and anthem recordings
+// instead of generated placeholders. It never overwrites admin uploads or remote
+// URLs — only NULL/empty values are filled.
+function linkLocalMedia() {
+  const stats = { portraits: 0, anthems: 0 };
+  const readDir = (dir, re) => {
+    const map = new Map();
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { return map; }
+    for (const file of files) {
+      const m = re.exec(file);
+      if (!m) continue;
+      const key = file.slice(0, -m[0].length);
+      const current = map.get(key);
+      // Prefer mp3 over other containers (better browser support), first match wins otherwise.
+      if (!current || (/\.mp3$/i.test(file) && !/\.mp3$/i.test(current))) map.set(key, file);
+    }
+    return map;
+  };
+  const tx = db.transaction(() => {
+    const portraits = readDir(PORTRAIT_DIR, IMAGE_EXT);
+    if (portraits.size) {
+      const upd = db.prepare(`UPDATE leaders SET portrait=? WHERE slug=? AND (portrait IS NULL OR portrait='')`);
+      for (const row of db.prepare(`SELECT slug FROM leaders WHERE portrait IS NULL OR portrait=''`).all()) {
+        const file = portraits.get(row.slug);
+        if (file && upd.run('/portraits/' + file, row.slug).changes) stats.portraits++;
+      }
+    }
+    const anthems = readDir(ANTHEM_DIR, AUDIO_EXT);
+    if (anthems.size) {
+      const upd = db.prepare(`UPDATE countries SET anthem_audio=? WHERE code=? AND (anthem_audio IS NULL OR anthem_audio='')`);
+      for (const row of db.prepare(`SELECT code FROM countries WHERE anthem_audio IS NULL OR anthem_audio=''`).all()) {
+        const file = anthems.get(row.code.toLowerCase());
+        if (file && upd.run('/anthems/' + file, row.code).changes) stats.anthems++;
+      }
+    }
+  });
+  tx();
+  return stats;
 }
 
 function seedDemoVotes() {
@@ -122,4 +173,4 @@ function resetDemoData() {
   }); tx(); seedDemoVotes();
 }
 
-module.exports = { seedAll, seedDemoVotes, clearDemoVotes, resetDemoData, recomputeRanks, slugify, dayStr };
+module.exports = { seedAll, linkLocalMedia, seedDemoVotes, clearDemoVotes, resetDemoData, recomputeRanks, slugify, dayStr };
