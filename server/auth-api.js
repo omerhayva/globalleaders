@@ -4,6 +4,7 @@ const db = require('./db');
 const { rateLimit } = require('./services/ratelimit');
 const { cleanText, safeInitials } = require('./services/sanitize');
 const auth = require('./services/auth');
+const identity = require('./services/identity');
 
 const router = express.Router();
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -14,7 +15,17 @@ function publicUser(u) {
   return { id: u.id, username: u.username, name: u.display_name, email: u.email, provider: 'local', email_verified: !!u.email_verified_at, x_handle: u.x_handle || null, color: u.avatar_color || '#f5b524', initials: safeInitials(u.display_name || u.username) };
 }
 function sessionUser(sessionId) { return db.prepare(`SELECT u.* FROM users u JOIN vote_sessions vs ON vs.user_id=u.id WHERE vs.session_id=? ORDER BY vs.created_at DESC LIMIT 1`).get(sessionId); }
-function attachSession(user, sessionId) {
+// Oturum açma ortak yolu: giriş anında cihazdaki bakiye HESABA taşınır.
+// Böylece satın alınan oylar cihaz/çerez değişse de kaybolmaz; bedava kota da
+// sıfırlanmaz (kullanılmış haklar MAX ile devralınır).
+function attachSession(user, sessionId, req) {
+  if (req) {
+    try {
+      const id = identity.resolveIdentity(req);
+      identity.migrateBalance(id.voteKey, `user-${user.id}`);
+      identity.migrateBalance(id.cookieSession, `user-${user.id}`);
+    } catch { /* çok erken isteklerde kimlik servisi hazır olmayabilir */ }
+  }
   db.prepare('UPDATE vote_sessions SET user_id=? WHERE session_id=?').run(user.id, sessionId);
   db.prepare(`INSERT INTO vote_sessions (id,session_id,day,user_id) VALUES (?,?,date('now'),?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id`).run(`${sessionId}:${new Date().toISOString().slice(0,10)}`, sessionId, user.id);
 }
@@ -40,7 +51,7 @@ router.post('/register', rateLimit({ windowMs: 10 * 60_000, max: 5, name: 'auth-
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
   try { await sendMail({ to: email, subject: 'Verify your Global Leaders Live account', html: `<p>Welcome, ${cleanText(name, 60)}.</p><p>Verify your email to activate your account:</p><p><a href="${safeTokenUrl('/api/auth/verify-email', verifyToken)}">Verify email</a></p><p>This link expires in 24 hours.</p>` }); }
   catch (e) { db.prepare('DELETE FROM users WHERE id=?').run(user.id); return res.status(503).json({ error: e.message === 'email_delivery_not_configured' ? 'email_delivery_not_configured' : 'email_delivery_failed', message: e.message === 'email_delivery_not_configured' ? 'Email delivery is not configured on the server yet.' : 'Email delivery failed.' }); }
-  attachSession(user, req.sessionId);
+  attachSession(user, req.sessionId, req);
   res.status(201).json({ ok: true, pendingVerification: true, user: publicUser(user), message: 'Account created. Check your email to verify your address.' });
 });
 
@@ -51,13 +62,13 @@ router.post('/login', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'auth-lo
   if (!user || !user.password_hash) return generic();
   if (user.locked_until && Date.parse(user.locked_until) > Date.now()) return res.status(429).json({ error: 'account_locked', message: 'Too many failed attempts. Try again later.' });
   if (!auth.verifyPassword(password, user.password_hash)) { const failures = (user.failed_login_count || 0) + 1, locked = failures >= 8 ? new Date(Date.now() + 15 * 60_000).toISOString() : null; db.prepare('UPDATE users SET failed_login_count=?, locked_until=? WHERE id=?').run(failures, locked, user.id); return generic(); }
-  db.prepare('UPDATE users SET failed_login_count=0, locked_until=NULL WHERE id=?').run(user.id); attachSession(user, req.sessionId); res.json({ ok: true, user: publicUser(user), needsEmailVerification: !user.email_verified_at });
+  db.prepare('UPDATE users SET failed_login_count=0, locked_until=NULL WHERE id=?').run(user.id); attachSession(user, req.sessionId, req); res.json({ ok: true, user: publicUser(user), needsEmailVerification: !user.email_verified_at });
 });
 router.get('/me', (req, res) => { const u = sessionUser(req.sessionId); res.json(u ? { user: publicUser(u) } : {}); });
 router.post('/logout', (req, res) => { db.prepare('UPDATE vote_sessions SET user_id=NULL WHERE session_id=?').run(req.sessionId); res.json({ ok: true }); });
 router.get('/verify-email', rateLimit({ windowMs: 10 * 60_000, max: 20, name: 'auth-verify' }), (req, res) => { const token = String(req.query.token || '').slice(0, 128); const users = db.prepare('SELECT * FROM users WHERE email_verify_token_hash IS NOT NULL').all(); const user = users.find(u => auth.tokenMatchesExpiry(token, u.email_verify_token_hash, u.email_verify_expires_at)); if (!user) return res.status(400).type('html').send('<h1>Invalid or expired verification link</h1><p>Please request a new verification email.</p>'); db.prepare('UPDATE users SET email_verified_at=datetime(\'now\'), email_verify_token_hash=NULL, email_verify_expires_at=NULL WHERE id=?').run(user.id); res.type('html').send('<h1>Email verified</h1><p>Your Global Leaders Live account is verified. You can return to the site and sign in.</p>'); });
 router.post('/resend-verification', rateLimit({ windowMs: 60 * 60_000, max: 3, name: 'auth-resend' }), async (req, res) => { const email = auth.normalizeEmail(req.body?.email), user = db.prepare('SELECT * FROM users WHERE email=?').get(email); if (!user || user.email_verified_at) return res.json({ ok: true, message: 'If the account exists and needs verification, an email has been sent.' }); const token = auth.newToken(); db.prepare('UPDATE users SET email_verify_token_hash=?, email_verify_expires_at=? WHERE id=?').run(auth.tokenHash(token), auth.expiry(verifyMinutes), user.id); try { await sendMail({ to: email, subject: 'Verify your Global Leaders Live account', html: `<p><a href="${safeTokenUrl('/api/auth/verify-email', token)}">Verify your email</a></p><p>This link expires in 24 hours.</p>` }); } catch (e) { return res.status(503).json({ error: e.message === 'email_delivery_not_configured' ? 'email_delivery_not_configured' : 'email_delivery_failed' }); } res.json({ ok: true, message: 'If the account exists and needs verification, an email has been sent.' }); });
 router.post('/forgot-password', rateLimit({ windowMs: 60 * 60_000, max: 3, name: 'auth-forgot' }), async (req, res) => { const email = auth.normalizeEmail(req.body?.email), user = db.prepare('SELECT * FROM users WHERE email=?').get(email); if (user) { const token = auth.newToken(); db.prepare('UPDATE users SET password_reset_token_hash=?, password_reset_expires_at=? WHERE id=?').run(auth.tokenHash(token), auth.expiry(resetMinutes), user.id); try { await sendMail({ to: email, subject: 'Reset your Global Leaders Live password', html: `<p>Reset your password:</p><p><a href="${safeTokenUrl('/reset-password', token)}">Reset password</a></p><p>This link expires in 30 minutes.</p>` }); } catch (e) { return res.status(503).json({ error: e.message === 'email_delivery_not_configured' ? 'email_delivery_not_configured' : 'email_delivery_failed' }); } } res.json({ ok: true, message: 'If an account exists for that email, password reset instructions have been sent.' }); });
-router.post('/reset-password', rateLimit({ windowMs: 60 * 60_000, max: 5, name: 'auth-reset' }), (req, res) => { const token = String(req.body?.token || '').slice(0, 128), password = typeof req.body?.password === 'string' ? req.body.password : ''; if (!auth.validPassword(password)) return res.status(400).json({ error: 'invalid_password', message: 'Password must be 8–128 characters.' }); const users = db.prepare('SELECT * FROM users WHERE password_reset_token_hash IS NOT NULL').all(); const user = users.find(u => auth.tokenMatchesExpiry(token, u.password_reset_token_hash, u.password_reset_expires_at)); if (!user) return res.status(400).json({ error: 'invalid_or_expired_token' }); db.prepare('UPDATE users SET password_hash=?, password_reset_token_hash=NULL, password_reset_expires_at=NULL, failed_login_count=0, locked_until=NULL WHERE id=?').run(auth.hashPassword(password), user.id); attachSession(user, req.sessionId); res.json({ ok: true, user: publicUser(db.prepare('SELECT * FROM users WHERE id=?').get(user.id)) }); });
+router.post('/reset-password', rateLimit({ windowMs: 60 * 60_000, max: 5, name: 'auth-reset' }), (req, res) => { const token = String(req.body?.token || '').slice(0, 128), password = typeof req.body?.password === 'string' ? req.body.password : ''; if (!auth.validPassword(password)) return res.status(400).json({ error: 'invalid_password', message: 'Password must be 8–128 characters.' }); const users = db.prepare('SELECT * FROM users WHERE password_reset_token_hash IS NOT NULL').all(); const user = users.find(u => auth.tokenMatchesExpiry(token, u.password_reset_token_hash, u.password_reset_expires_at)); if (!user) return res.status(400).json({ error: 'invalid_or_expired_token' }); db.prepare('UPDATE users SET password_hash=?, password_reset_token_hash=NULL, password_reset_expires_at=NULL, failed_login_count=0, locked_until=NULL WHERE id=?').run(auth.hashPassword(password), user.id); attachSession(user, req.sessionId, req); res.json({ ok: true, user: publicUser(db.prepare('SELECT * FROM users WHERE id=?').get(user.id)) }); });
 
 module.exports = router;

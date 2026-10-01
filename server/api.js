@@ -7,6 +7,7 @@ const sse = require('./services/sse');
 const fraud = require('./services/fraud');
 const payments = require('./services/payments');
 const paymentVerification = require('./services/payment-verification');
+const identity = require('./services/identity');
 const currency = require('./services/currency');
 
 const router = express.Router();
@@ -20,8 +21,40 @@ const IDEMPOTENCY_RE = /^[A-Za-z0-9._:-]{16,128}$/;
 const getUser = (sessionId) => db.prepare(`SELECT u.* FROM users u JOIN vote_sessions vs ON vs.user_id=u.id WHERE vs.session_id=? ORDER BY vs.created_at DESC LIMIT 1`).get(sessionId);
 const pubUser = (u) => ({ id: u.id, name: u.display_name, provider: u.provider, x_handle: u.x_handle || null, color: u.avatar_color || '#f5b524', initials: safeInitials(u.display_name) });
 
-router.get('/session', (req, res) => { const vs = core.getOrCreateVoteSession(req.sessionId, ip(req), req.headers['user-agent']); res.json({ remaining: core.remainingVotes(vs), free_used: vs.free_used, bonus_earned: vs.bonus_earned, bonus_used: vs.bonus_used, purchased: vs.purchased || 0, purchased_used: vs.purchased_used || 0, freePerDay: parseInt(core.getSetting('free_votes_per_day') || '1', 10), demoMode: core.getSetting('demo_mode') === '1' }); });
-router.get('/my-votes', (req, res) => { const user = getUser(req.sessionId); if (!user) return res.json(core.myVotes(req.sessionId)); const sids = db.prepare('SELECT DISTINCT session_id FROM vote_sessions WHERE user_id=?').all(user.id).map(r => r.session_id); if (!sids.includes(req.sessionId)) sids.push(req.sessionId); const merged = new Map(); for (const sid of sids) for (const v of core.myVotes(sid)) { const m = merged.get(v.slug); if (m) { m.n += v.n; if (v.last > m.last) m.last = v.last; } else merged.set(v.slug, { ...v }); } res.json([...merged.values()].sort((a, b) => String(b.last).localeCompare(String(a.last))).slice(0, 50)); });
+// Oturum bilgisi artık KİMLİK üzerinden hesaplanır: giriş yapmışsa hesabı,
+// yapmamışsa cihazı takip eder. Böylece sayfa yenilemek ya da mobil veriyi
+// kapatıp açmak ek bedava oy kazandırmaz; satın alınan oylar ise hesaba bağlıdır.
+function identityFor(req) {
+  const id = identity.resolveIdentity(req);
+  identity.migrateBalance(id.cookieSession, id.voteKey); // eski çerez bakiyesi varsa taşınır
+  return id;
+}
+
+// Bir ödemenin sahibi miyiz? Cihaz parmak izi/çerezi kanıtı varsa kimlik
+// anahtarı yeter; yoksa (yalnızca IP+UA'dan türeyen zayıf kimlik) oturum
+// kimliği şart — aynı ağdaki başkası ödeme kaydını göremesin.
+function ownsPayment(id, p) {
+  const ownerSid = p.session_id || null;
+  const ownerKey = p.identity_key || null;
+  if (!ownerSid && !ownerKey) return true;
+  if (ownerSid && id.cookieSession && id.cookieSession === ownerSid) return true;
+  if (ownerKey && id.device.source !== 'ip_ua' && id.voteKey === ownerKey) return true;
+  if (ownerKey && id.user && ownerKey === `user-${id.user.id}`) return true;
+  if (!ownerKey && ownerSid && id.voteKey === ownerSid && id.device.source !== 'ip_ua') return true;
+  return false;
+}
+
+router.get('/session', (req, res) => {
+  const id = identityFor(req);
+  const vs = core.getOrCreateVoteSession(id.voteKey, id.ip, req.headers['user-agent']);
+  res.json({
+    remaining: core.remainingVotes(vs), free_used: vs.free_used, bonus_earned: vs.bonus_earned, bonus_used: vs.bonus_used,
+    purchased: vs.purchased || 0, purchased_used: vs.purchased_used || 0,
+    freePerDay: parseInt(core.getSetting('free_votes_per_day') || '1', 10), demoMode: core.getSetting('demo_mode') === '1',
+    signedIn: !!id.user, identitySource: id.device.source
+  });
+});
+router.get('/my-votes', (req, res) => { const id = identityFor(req); const user = id.user; if (!user) return res.json(core.myVotes(id.voteKey)); const sids = db.prepare('SELECT DISTINCT session_id FROM vote_sessions WHERE user_id=?').all(user.id).map(r => r.session_id); if (!sids.includes(id.voteKey)) sids.push(id.voteKey); const merged = new Map(); for (const sid of sids) for (const v of core.myVotes(sid)) { const m = merged.get(v.slug); if (m) { m.n += v.n; if (v.last > m.last) m.last = v.last; } else merged.set(v.slug, { ...v }); } res.json([...merged.values()].sort((a, b) => String(b.last).localeCompare(String(a.last))).slice(0, 50)); });
 
 router.post('/auth/login', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'auth-login' }), (req, res) => {
   const b = req.body || {}; const demoMode = core.getSetting('demo_mode') === '1'; const name = cleanText(b.name, 60); const email = String(b.email || '').trim().toLowerCase().slice(0, 120) || null; const provider = ['local', 'x', 'google', 'facebook'].includes(b.provider) ? b.provider : 'local'; const xh = cleanX(b.x_handle);
@@ -29,6 +62,11 @@ router.post('/auth/login', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'au
   let user = email ? db.prepare('SELECT * FROM users WHERE email=?').get(email) : null; if (!user && provider === 'x' && xh) user = db.prepare('SELECT * FROM users WHERE provider=? AND x_handle=?').get('x', xh);
   if (user) { if (!demoMode) return res.status(409).json({ error: 'email_taken', message: 'This email is already registered. Sign-in verification is not available yet.' }); db.prepare('UPDATE users SET x_handle=COALESCE(?,x_handle) WHERE id=?').run(xh, user.id); user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id); }
   else { const colors = ['#f5b524', '#38bdf8', '#a78bfa', '#fb7185', '#34d399', '#f97316']; const color = colors[Math.floor(Math.random() * colors.length)]; const info = db.prepare('INSERT INTO users (email,display_name,provider,x_handle,avatar_color) VALUES (?,?,?,?,?)').run(email, name, provider, xh, color); user = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid); }
+  // Giriş yapıldığında cihazdaki bakiye (varsa) hesaba taşınır ve oy kimliği
+  // hesap olur: satın alınan oylar artık cihaz değiştirse de kaybolmaz.
+  const device = identity.resolveIdentity(req);
+  identity.migrateBalance(device.voteKey, `user-${user.id}`);
+  identity.migrateBalance(req.sessionId, `user-${user.id}`);
   db.prepare('UPDATE vote_sessions SET user_id=? WHERE session_id=?').run(user.id, req.sessionId); db.prepare(`INSERT INTO vote_sessions (id,session_id,day,user_id) VALUES (?,?,date('now'),?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id`).run(req.sessionId + ':' + new Date().toISOString().slice(0, 10), req.sessionId, user.id); res.json({ ok: true, user: pubUser(user), demoSocial: provider !== 'local', demoAuth: demoMode });
 });
 router.get('/auth/me', (req, res) => { const u = getUser(req.sessionId); res.json(u ? { user: pubUser(u) } : {}); });
@@ -47,13 +85,14 @@ router.get('/leader/:slug', (req, res) => { const l = core.leaderProfile(req.par
 router.get('/countries', (req, res) => res.json(core.countriesMapData())); router.get('/country/:code', (req, res) => { const c = core.countryInfo(req.params.code); c ? res.json(c) : res.status(404).json({ error: 'not_found' }); }); router.get('/stats', (req, res) => res.json(core.globalStats())); router.get('/trending', (req, res) => res.json(core.trending())); router.get('/activity', (req, res) => res.json(core.recentActivity(25))); router.get('/currency', (req, res) => { const ccy = req.query.ccy || currency.guessCurrency(req.headers['accept-language']); res.json({ base: 'USD', display: currency.display(5, ccy), currency: ccy, rates: currency.rates }); });
 
 router.post('/vote', rateLimit({ windowMs: 60_000, max: 30, name: 'vote-endpoint' }), (req, res) => {
-  const key = String(req.get('Idempotency-Key') || ''); if (!IDEMPOTENCY_RE.test(key)) return res.status(400).json({ error: 'idempotency_key_required' }); const body = req.body || {}; const slug = String(body.slug || ''); const count = Math.max(1, Math.min(10, Number.parseInt(body.count, 10) || 1)); const requestHash = crypto.createHash('sha256').update(JSON.stringify({ slug, count })).digest('hex'); const existing = db.prepare('SELECT request_hash,response_json FROM vote_idempotency WHERE session_id=? AND idempotency_key=?').get(req.sessionId, key);
+  const key = String(req.get('Idempotency-Key') || ''); if (!IDEMPOTENCY_RE.test(key)) return res.status(400).json({ error: 'idempotency_key_required' }); const body = req.body || {}; const slug = String(body.slug || ''); const count = Math.max(1, Math.min(10, Number.parseInt(body.count, 10) || 1)); const requestHash = crypto.createHash('sha256').update(JSON.stringify({ slug, count })).digest('hex'); const existing = db.prepare('SELECT request_hash,response_json FROM vote_idempotency WHERE session_id=? AND idempotency_key=?').get(identity.resolveIdentity(req).voteKey, key);
   if (existing) { if (existing.request_hash !== requestHash) return res.status(409).json({ error: 'idempotency_key_reused' }); try { return res.json(JSON.parse(existing.response_json)); } catch { return res.status(500).json({ error: 'idempotency_corrupt' }); } }
-  const result = core.castVotes({ sessionId: req.sessionId, ip: ip(req), ua: req.headers['user-agent'], leaderSlug: slug, count }); if (result.error) { const codes = { no_votes_left: 429, too_fast: 429, daily_cap: 429, device_limit: 429, suspended: 403, captcha_required: 403, leader_not_found: 404 }; return res.status(codes[result.error] || 400).json(result); } db.prepare('INSERT INTO vote_idempotency (session_id,idempotency_key,request_hash,response_json) VALUES (?,?,?,?)').run(req.sessionId, key, requestHash, JSON.stringify(result)); db.prepare("DELETE FROM vote_idempotency WHERE created_at < datetime('now','-2 days')").run(); res.json(result);
+  const id = identityFor(req);
+  const result = core.castVotes({ sessionId: id.voteKey, ip: id.ip, ua: req.headers['user-agent'], leaderSlug: slug, count, deviceKey: id.device.sig, subnet: id.subnet }); if (result.error) { const codes = { no_votes_left: 429, too_fast: 429, daily_cap: 429, device_limit: 429, suspended: 403, captcha_required: 403, leader_not_found: 404 }; return res.status(codes[result.error] || 400).json(result); } db.prepare('INSERT INTO vote_idempotency (session_id,idempotency_key,request_hash,response_json) VALUES (?,?,?,?)').run(id.voteKey, key, requestHash, JSON.stringify(result)); db.prepare("DELETE FROM vote_idempotency WHERE created_at < datetime('now','-2 days')").run(); res.json(result);
 });
 
-router.post('/share', rateLimit({ windowMs: 60_000, max: 10, name: 'share-endpoint' }), (req, res) => { const { slug, platform } = req.body || {}; const result = core.registerShare({ sessionId: req.sessionId, ip: ip(req), leaderSlug: String(slug || ''), platform }); if (result.error) return res.status(400).json(result); res.json(result); });
-router.post('/referral', rateLimit({ windowMs: 60 * 60_000, max: 20, name: 'referral-endpoint' }), (req, res) => { const { shareId, slug } = req.body || {}; if (!shareId) return res.json({ ok: false }); const chk = fraud.checkReferral({ shareId: String(shareId).slice(0, 24), visitorIp: ip(req), ownerSession: req.sessionId }); if (!chk.ok) return res.json({ ok: false, reason: chk.reason }); const leader = db.prepare('SELECT id FROM leaders WHERE slug=?').get(String(slug || '')); db.prepare('INSERT INTO referrals (share_id,visitor_session,visitor_ip_hash,leader_id) VALUES (?,?,?,?)').run(String(shareId).slice(0, 24), req.sessionId, chk.ipHash, leader ? leader.id : null); db.prepare('UPDATE shares SET clicks=clicks+1 WHERE id=?').run(String(shareId).slice(0, 24)); res.json({ ok: true }); });
+router.post('/share', rateLimit({ windowMs: 60_000, max: 10, name: 'share-endpoint' }), (req, res) => { const { slug, platform } = req.body || {}; const id = identity.resolveIdentity(req); const result = core.registerShare({ sessionId: id.voteKey, ip: id.ip, leaderSlug: String(slug || ''), platform }); if (result.error) return res.status(400).json(result); res.json(result); });
+router.post('/referral', rateLimit({ windowMs: 60 * 60_000, max: 20, name: 'referral-endpoint' }), (req, res) => { const { shareId, slug } = req.body || {}; if (!shareId) return res.json({ ok: false }); const chk = fraud.checkReferral({ shareId: String(shareId).slice(0, 24), visitorIp: ip(req), ownerSession: identity.resolveIdentity(req).voteKey }); if (!chk.ok) return res.json({ ok: false, reason: chk.reason }); const leader = db.prepare('SELECT id FROM leaders WHERE slug=?').get(String(slug || '')); db.prepare('INSERT INTO referrals (share_id,visitor_session,visitor_ip_hash,leader_id) VALUES (?,?,?,?)').run(String(shareId).slice(0, 24), req.sessionId, chk.ipHash, leader ? leader.id : null); db.prepare('UPDATE shares SET clicks=clicks+1 WHERE id=?').run(String(shareId).slice(0, 24)); res.json({ ok: true }); });
 
 const VOTE_PACKS = { 'votes-10': { votes: 10, usd: 1.0 }, 'votes-60': { votes: 60, usd: 5.0 } };
 const mockPaymentsLive = () => core.getSetting('demo_mode') !== '1' && payments.active === 'mock';
@@ -66,7 +105,8 @@ router.post('/purchase/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name
   if (kind === 'ad' && !db.prepare('SELECT 1 FROM advertising_slots WHERE id=? AND active=1').get(reference)) return res.status(404).json({ error: 'slot_not_found' }); if (kind === 'anthem' && !db.prepare('SELECT 1 FROM countries WHERE code=?').get(String(reference || '').toUpperCase())) return res.status(404).json({ error: 'country_not_found' }); if (kind === 'votes' && !VOTE_PACKS[reference]) return res.status(400).json({ error: 'pack_not_found' });
   const amountUsd = kind === 'votes' ? VOTE_PACKS[reference].usd : 5; const ccy = currency.guessCurrency(req.headers['accept-language']); let intent;
   const description = kind === 'votes' ? `${VOTE_PACKS[reference].votes} votes — Global Leaders Live` : kind === 'ad' ? `Ad space ${reference} — Global Leaders Live` : `National anthem ${String(reference).toUpperCase()} — Global Leaders Live`;
-  try { intent = await payments.createIntent({ method: wanted, sessionId: req.sessionId, kind, reference, advertiser: cleanText(advertiser, 60), amountUsd, baseUrl: process.env.PUBLIC_BASE_URL, description }); } catch (e) { if (e && e.message === 'crypto_wallet_not_configured') return res.status(503).json({ error: 'crypto_wallet_not_configured', message: 'Crypto checkout is not configured yet.' });
+  const buyerId = identityFor(req);
+  try { intent = await payments.createIntent({ method: wanted, sessionId: buyerId.cookieSession, identityKey: buyerId.voteKey, kind, reference, advertiser: cleanText(advertiser, 60), amountUsd, baseUrl: process.env.PUBLIC_BASE_URL, description }); } catch (e) { if (e && e.message === 'crypto_wallet_not_configured') return res.status(503).json({ error: 'crypto_wallet_not_configured', message: 'Crypto checkout is not configured yet.' });
     if (e && e.message === 'crypto_wallet_address_invalid') return res.status(503).json({ error: 'crypto_wallet_address_invalid', message: 'The configured crypto wallet address is not a valid USDT-TRC20 address. Payments are blocked until it is fixed.' }); if (e && e.message === 'unsupported_crypto_asset') return res.status(503).json({ error: 'unsupported_crypto_asset', message: 'Only USDT is supported by the initial crypto checkout.' }); if (e && e.message === 'card_provider_not_configured') return res.status(503).json({ error: 'card_provider_not_configured', message: 'Card payments are not configured yet.' }); throw e; }
   if (intent.error) return res.status(502).json({ error: intent.error, message: 'The card provider could not start a checkout session.', detail: intent.detail });
   const termsMap = { ad: { item: `Advertising slot: ${reference}`, duration: 'Slot ownership follows the published slot terms.', receives: 'Sponsored placement on Global Leaders Live.' }, anthem: { item: `National anthem sponsorship: ${reference}`, duration: 'Ownership lasts until another buyer takes over the same slot.', receives: 'Sponsored-by credit on the country and anthem pages.' }, votes: { item: `Vote pack: ${VOTE_PACKS[reference] ? VOTE_PACKS[reference].votes : ''} votes`, duration: 'Votes are credited to your session instantly and never expire.', receives: `${VOTE_PACKS[reference] ? VOTE_PACKS[reference].votes : ''} extra votes.` } };
@@ -105,7 +145,8 @@ router.post('/purchase/details', rateLimit({ windowMs: 10 * 60_000, max: 30, nam
   const { intentId, details } = req.body || {};
   const p = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(String(intentId || ''));
   if (!p) return res.status(404).json({ error: 'unknown_intent' });
-  if (p.session_id && p.session_id !== req.sessionId) return res.status(403).json({ error: 'wrong_session' });
+  const holder = identity.resolveIdentity(req);
+  if (!ownsPayment(holder, p)) return res.status(403).json({ error: 'wrong_session' });
   if (p.status !== 'pending') return res.status(409).json({ error: 'payment_not_pending', status: p.status });
   const prepared = preparePurchaseDetails(p.kind, details); if (prepared.error) return res.status(400).json(prepared);
   let meta = {}; try { meta = p.meta ? JSON.parse(p.meta) : {}; } catch { meta = {}; }
@@ -117,7 +158,8 @@ router.post('/purchase/details', rateLimit({ windowMs: 10 * 60_000, max: 30, nam
 router.post('/purchase/confirm', rateLimit({ windowMs: 10 * 60_000, max: 15, name: 'purchase-confirm' }), (req, res) => {
   if (mockPaymentsLive()) return res.status(503).json({ error: 'payment_provider_not_configured', message: 'Real payments are not configured yet.' });
   const { intentId, details } = req.body || {}; const pending = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(String(intentId || '')); if (!pending) return res.status(404).json({ error: 'unknown_intent' });
-  if (pending.session_id && pending.session_id !== req.sessionId) { fraud.logFraud('intent_takeover', req.sessionId, null, String(intentId || '')); return res.status(403).json({ error: 'wrong_session' }); }
+  const buyer = identity.resolveIdentity(req);
+  if (!ownsPayment(buyer, pending)) { fraud.logFraud('intent_takeover', buyer.voteKey, null, String(intentId || '')); return res.status(403).json({ error: 'wrong_session' }); }
   if (pending.provider === 'stripe') return res.status(400).json({ error: 'card_payments_are_confirmed_by_webhook' });
   const prepared = preparePurchaseDetails(pending.kind, details || {}); if (prepared.error) return res.status(400).json(prepared);
   const conf = payments.confirm(String(intentId || ''), prepared.details);
@@ -141,7 +183,7 @@ router.post('/purchase/confirm', rateLimit({ windowMs: 10 * 60_000, max: 15, nam
     db.prepare(`INSERT INTO anthem_slots (country_code,sponsor,sponsor_session,price_usd,purchased_at,sponsor_x) VALUES (?,?,?,5.0,datetime('now'),?) ON CONFLICT(country_code) DO UPDATE SET sponsor=excluded.sponsor,sponsor_session=excluded.sponsor_session,purchased_at=excluded.purchased_at,sponsor_x=excluded.sponsor_x`).run(cc, sponsor, req.sessionId, xh); db.prepare('INSERT INTO anthem_purchases (country_code,sponsor,payment_id,amount_usd,sponsor_x) VALUES (?,?,?,5.0,?)').run(cc, sponsor, p.id, xh); if (prev && prev.sponsor) db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(cc, prev.sponsor, 'replaced'); db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(cc, sponsor, 'purchased'); const cname = (db.prepare('SELECT name FROM countries WHERE code=?').get(cc) || {}).name || cc; core.pushActivity('anthem', `${core.FLAG(cc)} ${sponsor}${xh ? ' (@' + xh + ')' : ''} took over ${cname}'s national anthem`, cc, null); sse.broadcast('anthem_purchased', { country: cc, sponsor, sponsor_x: xh }); return res.json({ ok: true, kind: 'anthem', country: cc, sponsor, shareText: `${core.FLAG(cc)} I just took over ${cname}'s national anthem slot on Global Leaders Live!` });
   }
   if (p.kind === 'votes') {
-    const pack = VOTE_PACKS[p.reference]; if (!pack) return res.status(400).json({ error: 'pack_not_found' }); const vs = core.getOrCreateVoteSession(req.sessionId, ip(req), req.headers['user-agent']); db.prepare('UPDATE vote_sessions SET purchased=purchased+? WHERE id=?').run(pack.votes, vs.id); db.prepare('INSERT INTO bonus_votes (session_id,reason) VALUES (?,?)').run(req.sessionId, 'purchase:' + p.reference); const vs2 = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(vs.id); return res.json({ ok: true, kind: 'votes', votesAdded: pack.votes, remaining: core.remainingVotes(vs2) });
+    const pack = VOTE_PACKS[p.reference]; if (!pack) return res.status(400).json({ error: 'pack_not_found' }); const buyerId = identityFor(req); const vs = core.getOrCreateVoteSession(buyerId.voteKey, buyerId.ip, req.headers['user-agent']); db.prepare('UPDATE vote_sessions SET purchased=purchased+? WHERE id=?').run(pack.votes, vs.id); db.prepare('INSERT INTO bonus_votes (session_id,reason) VALUES (?,?)').run(buyerId.voteKey, 'purchase:' + p.reference); const vs2 = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(vs.id); return res.json({ ok: true, kind: 'votes', votesAdded: pack.votes, remaining: core.remainingVotes(vs2) });
   }
   res.json({ ok: true });
 });
@@ -150,7 +192,8 @@ router.get('/purchase/status', (req, res) => {
   const intentId = String(req.query.intent || '');
   const p = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId);
   if (!p) return res.status(404).json({ error: 'unknown_intent' });
-  if (p.session_id && p.session_id !== req.sessionId) return res.status(403).json({ error: 'wrong_session' });
+  const viewer = identity.resolveIdentity(req);
+  if (!ownsPayment(viewer, p)) return res.status(403).json({ error: 'wrong_session' });
   const cfg = paymentVerification.walletConfig();
   const messages = {
     pending: 'Ödeme bekleniyor: tutarı gönderip işlem hash’ini bildirin.',

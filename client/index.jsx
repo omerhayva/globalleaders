@@ -3,6 +3,7 @@ import { actions, getState } from './store.js';
 import { api } from './api.js';
 import { Toasts, Confetti } from './ui/Toasts.jsx';
 import { ModalHost, PaymentReturnWatcher } from './ui/modals.jsx';
+import { initDevice } from './device.js';
 import { HeaderActions } from './ui/HeaderActions.jsx';
 import { Leaderboard } from './ui/Leaderboard.jsx';
 import { StatsRings } from './ui/StatsRings.jsx';
@@ -30,6 +31,8 @@ window.GLUI = {
 
 // Mount noktaları — sayfada hangi kaplar varsa o adacıklar canlanır (SSR boş kalırsa
 // adacık hiç render vermez, sayfa statik haliyle çalışmaya devam eder).
+initDevice(); // cihaz imzası ilk oy isteğinden önce hazır olsun
+
 const reactRoot = createRoot(document.getElementById('react-root') || document.createElement('div'));
 reactRoot.render(
   <StrictMode>

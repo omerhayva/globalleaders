@@ -15,9 +15,20 @@ const FLAG = cc => String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1A
 function getOrCreateVoteSession(sessionId, ip, ua) {
   const day = dayStr();
   const id = sessionId + ':' + day;
-  db.prepare(`INSERT OR IGNORE INTO vote_sessions (id,session_id,day,ip,ua_hash) VALUES (?,?,?,?,?)`)
-    .run(id, sessionId, day, fraud.hash(ip), fraud.hash(ua || ''));
-  return db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
+  let vs = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
+  if (!vs) {
+    // Satın alınan oylar ASLA süresi dolmaz: önceki günlerden kalan bakiye
+    // yeni günün satırına devredilir (bonus ve bedava oylar günlük kalır).
+    // Devir sırasında kaynak satırlar SIFIRLANIR; aksi hâlde bakiye her gün
+    // yeniden toplanıp katlanarak çoğalırdı.
+    const carry = db.prepare(`SELECT COALESCE(SUM(MAX(purchased - purchased_used, 0)),0) s
+                              FROM vote_sessions WHERE session_id=? AND day<>?`).get(sessionId, day).s;
+    if (carry > 0) db.prepare('UPDATE vote_sessions SET purchased=0, purchased_used=0 WHERE session_id=? AND day<>?').run(sessionId, day);
+    db.prepare(`INSERT OR IGNORE INTO vote_sessions (id,session_id,day,ip,ua_hash,purchased) VALUES (?,?,?,?,?,?)`)
+      .run(id, sessionId, day, fraud.hash(ip), fraud.hash(ua || ''), carry);
+    vs = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
+  }
+  return vs;
 }
 function remainingVotes(vs) {
   const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
@@ -31,16 +42,17 @@ function remainingVotes(vs) {
 // Ayrıca CIHAZ bazlı limit: bedava ve bonus oylar, aynı IP+UA parmak izinden
 // günde en fazla ekonomi izin verdiği kadar harcanabilir. Bu, X-GL-Session
 // başlığını değiştirerek (oturum rotasyonu) sınırsız bedava oy atmayı engeller.
-function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
+function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web', deviceKey = null, subnet = null }) {
   count = Math.max(1, Math.min(10, parseInt(count, 10) || 1));
   const leader = db.prepare(`SELECT * FROM leaders WHERE slug=? AND visible=1`).get(leaderSlug);
   if (!leader) return { error: 'leader_not_found' };
 
   const day = dayStr();
-  const chk = fraud.checkVote({ ip, sessionId, day });
+  const chk = fraud.checkVote({ ip, sessionId, day, subnet });
   if (!chk.ok) return { error: chk.reason };
 
-  const deviceHash = fraud.hash(String(ip) + '|' + String(ua || ''));
+  // Cihaz imzası çağıran taraftan gelir (parmak izi > cihaz çerezi > IP+UA).
+  const deviceHash = deviceKey || fraud.hash(String(ip) + '|' + String(ua || ''));
   const oldRank = leader.rank;
   const allocation = db.transaction(() => {
     const vs = getOrCreateVoteSession(sessionId, ip, ua);
@@ -82,12 +94,13 @@ function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
     db.prepare(`INSERT INTO leader_daily_stats (leader_id,day,votes,shares) VALUES (?,?,?,0)
                 ON CONFLICT(leader_id,day) DO UPDATE SET votes=votes+excluded.votes`).run(leader.id, day, spendable);
 
-    return { ok: true, count: spendable, vsId: vs.id };
+    return { ok: true, count: spendable, vsId: vs.id, freeOnly: bonusToUse === 0 && purchasedToUse === 0 };
   })();
 
   if (allocation.error) return allocation;
   const countApplied = allocation.count;
-  fraud.recordVote(chk.ipHash, day, countApplied);
+  // Alt ağ sayacı yalnızca bedava oylarda artar (satın alınan/bonus sınırlanmaz).
+  fraud.recordVote(chk.ipHash, day, countApplied, { subnet, freeOnly: !!allocation.freeOnly });
 
   const changes = recomputeRanks();
   const updated = db.prepare('SELECT rank,total_votes FROM leaders WHERE id=?').get(leader.id);

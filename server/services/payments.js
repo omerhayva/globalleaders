@@ -46,13 +46,13 @@ class ColdWalletProvider {
   // Yanlış yazılmış bir cüzdan adresine müşteri para göndermesin diye adres
   // biçimi kontrol edilir (TRC20 = T ile başlayan 34 karakterlik base58 adres).
   get addressValid() { return CRYPTO_NETWORK !== 'TRC20' ? !!COLD_WALLET_ADDRESS : isValidTronAddress(COLD_WALLET_ADDRESS); }
-  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta, advertiser }) {
+  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, meta, advertiser }) {
     if (!COLD_WALLET_ADDRESS) throw new Error('crypto_wallet_not_configured');
     if (!this.addressValid) throw new Error('crypto_wallet_address_invalid');
     const cryptoAmount = cryptoAmountForUsd(amountUsd); const intentId = 'crypto_' + crypto.randomBytes(12).toString('hex');
     const storedMeta = safeMeta(meta, { advertiser });
-    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,meta)
-                VALUES ('cold_wallet',?,?,?,?,?,'pending',0,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, JSON.stringify(storedMeta));
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,meta)
+                VALUES ('cold_wallet',?,?,?,?,?,'pending',0,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, JSON.stringify(storedMeta));
     return {
       intentId, paymentMethod: 'cold_wallet', amountUsd, cryptoAmount,
       cryptoAmountDisplay: `${cryptoAmount} ${CRYPTO_ASSET}`,
@@ -103,12 +103,12 @@ class StripeProvider {
   get name() { return 'stripe'; }
   get method() { return 'card'; }
   get configured() { return !!STRIPE_SECRET_KEY(); }
-  async createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta, advertiser, baseUrl, description }) {
+  async createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, meta, advertiser, baseUrl, description }) {
     if (!this.configured) throw new Error('card_provider_not_configured');
     const intentId = 'card_' + crypto.randomBytes(12).toString('hex');
     const storedMeta = safeMeta(meta, { advertiser });
-    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,meta)
-                VALUES ('stripe',?,?,?,?,?,'pending',0,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, JSON.stringify(storedMeta));
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,meta)
+                VALUES ('stripe',?,?,?,?,?,'pending',0,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, JSON.stringify(storedMeta));
 
     const root = String(baseUrl || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
     const params = new URLSearchParams();
@@ -170,10 +170,10 @@ class MockPaymentProvider {
   get name() { return 'mock'; }
   get method() { return 'demo'; }
   get configured() { return true; }
-  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, meta }) {
+  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, meta }) {
     const intentId = 'mock_' + crypto.randomBytes(10).toString('hex');
-    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,meta)
-                VALUES ('mock',?,?,?,?,?,'pending',1,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, JSON.stringify(meta || {}));
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,meta)
+                VALUES ('mock',?,?,?,?,?,'pending',1,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, JSON.stringify(meta || {}));
     return { intentId, clientAction: { type: 'demo_confirm', message: 'Demo payment only — no real charge will occur.' } };
   }
   confirm(intentId) {

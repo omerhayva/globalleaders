@@ -34,6 +34,7 @@ Production requires the admin/fraud secrets plus a public receiving wallet:
 - `GL_ADMIN_SECRET` — random, high-entropy secret, at least 32 characters
 - `GL_ADMIN_PASSWORD` — strong admin password, at least 12 characters
 - `GL_FRAUD_SALT` — random secret used to hash abuse identifiers, at least 32 characters
+- `FREE_VOTES_PER_SUBNET_PER_DAY` — optional; free votes allowed per /24 network per day (default 40, `0` disables). Purchased votes are never capped.
 - `PUBLIC_BASE_URL` — canonical public HTTPS origin
 - `PAYMENT_PROVIDER=cold_wallet`
 - `CRYPTO_ASSET=USDT`

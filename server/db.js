@@ -120,6 +120,7 @@ const addCol = (table, colDef) => {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`); }
   catch (err) { if (!/duplicate column name/i.test(String(err && err.message))) throw err; }
 };
+addCol('payments', 'identity_key TEXT'); // oy bakiyesinin bağlandığı kimlik (cihaz/hesap)
 addCol('vote_sessions', 'purchased INTEGER DEFAULT 0');
 addCol('vote_sessions', 'purchased_used INTEGER DEFAULT 0');
 addCol('anthem_slots', 'sponsor_x TEXT');

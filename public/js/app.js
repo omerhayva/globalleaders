@@ -3,6 +3,41 @@
    Etkileşim bileşenleri (modal, oy, ödeme, hesap) React adacıklarıdır
    (/js/react-app.js) ve window.GLUI köprüsü ile buradan çağrılır. */
 (() => {
+  // ---- cihaz imzası (bkz. client/device.js) ----
+  // Aynı cihazdan gelen oyların sayfa yenileme / mobil veri aç-kapa ile
+  // çoğalmasını engellemek için tüm API isteklerine eklenir.
+  const computeDevice = () => {
+    try {
+      const p = [];
+      const sc = window.screen || {};
+      p.push(`${sc.width}x${sc.height}x${sc.colorDepth}x${sc.pixelDepth || 0}`);
+      p.push(Intl.DateTimeFormat().resolvedOptions().timeZone || '');
+      p.push((navigator.languages || [navigator.language || '']).join(','));
+      p.push([navigator.hardwareConcurrency || 0, navigator.deviceMemory || 0, navigator.platform || '', navigator.maxTouchPoints || 0].join('-'));
+      const c = document.createElement('canvas'); c.width = 220; c.height = 40;
+      const ctx = c.getContext('2d');
+      if (ctx) {
+        ctx.textBaseline = 'top'; ctx.font = '15px "Arial"';
+        ctx.fillStyle = '#f5b524'; ctx.fillRect(0, 0, 220, 40);
+        ctx.fillStyle = '#0b1220'; ctx.fillText('GLOBAL-LEADERS-LIVE', 4, 8);
+        p.push(c.toDataURL().slice(-96));
+      }
+      const str = p.join('|');
+      let h1 = 0x811c9dc5, h2 = 0x01000193;
+      for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = (h1 ^ ch) * 0x01000193; h2 = (h2 + ch * (i + 7)) * 0x85ebca6b; }
+      const hex = x => (x >>> 0).toString(16).padStart(8, '0');
+      return (hex(h1) + hex(h2) + hex(h1 ^ h2) + hex((h1 + h2) >>> 0)).slice(0, 32);
+    } catch { return ''; }
+  };
+  const GL_DEVICE = computeDevice();
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (url, opts) => {
+    const o = opts || {};
+    const headers = { ...(o.headers || {}) };
+    if (GL_DEVICE && !headers['X-GL-Device'] && !headers['x-gl-device']) headers['X-GL-Device'] = GL_DEVICE;
+    return origFetch(url, { ...o, headers });
+  };
+
   const D = window.__DATA__ || {};
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];

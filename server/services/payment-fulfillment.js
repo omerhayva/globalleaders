@@ -27,9 +27,10 @@ function fulfillPayment(paymentId, adminId, verifiedAmount) {
 
     if (payment.kind === 'votes') {
       const packs = { 'votes-10': 10, 'votes-60': 60 }; const votes = packs[payment.reference]; if (!votes) return { error: 'pack_not_found' };
-      const session = core.getOrCreateVoteSession(payment.session_id, null, null);
+      const creditTo = payment.identity_key || payment.session_id; // cihaz/hesap kimliği (yoksa eski kayıt)
+      const session = core.getOrCreateVoteSession(creditTo, null, null);
       db.prepare('UPDATE vote_sessions SET purchased=purchased+? WHERE id=?').run(votes, session.id);
-      db.prepare('INSERT INTO bonus_votes (session_id,reason) VALUES (?,?)').run(payment.session_id, `purchase:${payment.reference}:payment:${payment.id}`);
+      db.prepare('INSERT INTO bonus_votes (session_id,reason) VALUES (?,?)').run(creditTo, `purchase:${payment.reference}:payment:${payment.id}`);
       const updated = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(session.id);
       db.prepare(`UPDATE payments SET status='succeeded',fulfilled_at=?,fulfillment_key=?,verified_at=?,verified_by=? WHERE id=? AND status IN ('pending_verification','paid','pending')`).run(now, fulfillmentKey, now, String(adminId || 'admin'), payment.id);
       return { ok: true, kind: 'votes', votesAdded: votes, remaining: core.remainingVotes(updated), paymentId: payment.id };
@@ -50,7 +51,7 @@ function fulfillPayment(paymentId, adminId, verifiedAmount) {
     if (payment.kind === 'anthem') {
       const cc = String(payment.reference || '').toUpperCase(); if (!/^[A-Z]{2}$/.test(cc) || !db.prepare('SELECT 1 FROM countries WHERE code=?').get(cc)) return { error: 'country_not_found' };
       const sponsor = String(meta.sponsor || 'Anonymous').slice(0, 60) || 'Anonymous'; const xh = String(meta.x_handle || '').slice(0, 16) || null; const prev = db.prepare('SELECT sponsor FROM anthem_slots WHERE country_code=?').get(cc);
-      db.prepare(`INSERT INTO anthem_slots (country_code,sponsor,sponsor_session,price_usd,purchased_at,sponsor_x) VALUES (?,?,?,?,datetime('now'),?) ON CONFLICT(country_code) DO UPDATE SET sponsor=excluded.sponsor,sponsor_session=excluded.sponsor_session,price_usd=excluded.price_usd,purchased_at=excluded.purchased_at,sponsor_x=excluded.sponsor_x`).run(cc, sponsor, payment.session_id, expected, xh);
+      db.prepare(`INSERT INTO anthem_slots (country_code,sponsor,sponsor_session,price_usd,purchased_at,sponsor_x) VALUES (?,?,?,?,datetime('now'),?) ON CONFLICT(country_code) DO UPDATE SET sponsor=excluded.sponsor,sponsor_session=excluded.sponsor_session,price_usd=excluded.price_usd,purchased_at=excluded.purchased_at,sponsor_x=excluded.sponsor_x`).run(cc, sponsor, payment.identity_key || payment.session_id, expected, xh);
       db.prepare('INSERT INTO anthem_purchases (country_code,sponsor,payment_id,amount_usd,sponsor_x) VALUES (?,?,?,?,?)').run(cc, sponsor, payment.id, expected, xh);
       if (prev && prev.sponsor) db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(cc, prev.sponsor, 'replaced');
       db.prepare('INSERT INTO anthem_history (country_code,sponsor,event) VALUES (?,?,?)').run(cc, sponsor, 'purchased');

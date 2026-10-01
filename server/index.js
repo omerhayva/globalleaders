@@ -84,6 +84,13 @@ app.use((req, res, next) => {
   let sid = /^[a-f0-9]{32}$/.test(hdr) ? hdr : req.cookies.gl_session;
   if (!sid || !/^[a-f0-9]{32}$/.test(sid)) sid = crypto.randomBytes(16).toString('hex');
   if (req.cookies.gl_session !== sid) res.cookie('gl_session', sid, { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 365 * 86400000, path: '/' });
+  // Cihaz kimliği: tarayıcı parmak izi gönderemezse (JS kapalı, eski tarayıcı)
+  // oy limiti bu çerez üzerinden cihaza bağlanır. Süresi oturumdan uzundur.
+  let dev = req.cookies.gl_device;
+  if (!/^[a-f0-9]{32}$/.test(String(dev || ''))) {
+    dev = crypto.randomBytes(16).toString('hex');
+    res.cookie('gl_device', dev, { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 730 * 86400000, path: '/' });
+  }
   res.setHeader('X-GL-Session', sid);
   req.sessionId = sid;
   next();

@@ -10,8 +10,9 @@
     "test": "npm run test:react",
     "test:react": "node scripts/react-island-real-auth-test.js",
     "test:payments": "node scripts/test-payments.js",
-    "test:all": "node scripts/test-site.js && node scripts/test-payments.js && node scripts/react-island-real-auth-test.js",
-    "test:site": "node scripts/test-site.js"
+    "test:all": "node scripts/test-site.js && node scripts/test-payments.js && node scripts/react-island-real-auth-test.js && node scripts/test-abuse.js",
+    "test:site": "node scripts/test-site.js",
+    "test:abuse": "node scripts/test-abuse.js"
   },
   "keywords": [],
   "author": "",
