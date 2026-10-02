@@ -1,13 +1,17 @@
-// Paylaşılan API istemcisi — X-GL-Session başlığı + localStorage aynası.
+// Paylaşılan API istemcisi — X-GL-Session + X-GL-Device başlıkları ve localStorage aynası.
 // (app.js içindeki aynı mantığın React tarafındaki ikizi; çerez düşerse bile
-// oturum kimliği korunur.)
+// oturum kimliği korunur, cihaz imzası oy limitini cihaza bağlar.)
+import { deviceHeader } from './device.js';
+
 let GLSID = null;
 try { GLSID = localStorage.getItem('gl_sid'); } catch { /* erişim yok */ }
 
 export function api(url, opts) {
+  const device = deviceHeader();
   const headers = {
     ...(opts && opts.body ? { 'Content-Type': 'application/json' } : {}),
-    ...(GLSID ? { 'X-GL-Session': GLSID } : {})
+    ...(GLSID ? { 'X-GL-Session': GLSID } : {}),
+    ...(device ? { 'X-GL-Device': device } : {})
   };
   return fetch(url, {
     ...(opts || {}),

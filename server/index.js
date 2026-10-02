@@ -3,10 +3,17 @@ const path = require('path');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
 
+const { loadEnv } = require('./env');
+const envFile = loadEnv();
+if (envFile.loaded) console.log(`Loaded ${envFile.loaded} variable(s) from .env`);
+
 const db = require('./db');
 const seed = require('./seed');
 const core = require('./core');
+const analytics = require('./services/analytics');
+const num = n => Number(n || 0).toLocaleString('en-US');
 const render = require('./render');
+const graphics = require('./services/graphics-og');
 const api = require('./api');
 const authApi = require('./auth-api');
 const admin = require('./admin');
@@ -16,6 +23,23 @@ if (db.prepare('SELECT COUNT(*) c FROM leaders').get().c === 0) {
   console.log('Seeding database (leaders, countries)…');
   seed.seedAll({ withDemoVotes: false });
   console.log('Seeded', db.prepare('SELECT COUNT(*) c FROM leaders').get().c, 'leaders.');
+}
+
+// Taze kurulumda (hiç oy yokken) liderlerin sırası NULL kalır; oylama
+// sayfasında "null" görünmemesi için sıralar burada bir kez hesaplanır.
+{
+  const missing = db.prepare('SELECT COUNT(*) c FROM leaders WHERE visible=1 AND rank IS NULL').get().c;
+  if (missing) { seed.recomputeRanks(true); console.log(`Ranked ${missing} leaders (initial order).`); }
+  // Aksansız arama dizini: eski kayıtlar için bir kez doldurulur (idempotent).
+  const filled = seed.backfillNameSearch();
+  if (filled) console.log(`Search index prepared for ${filled} leaders.`);
+}
+
+// Wire the licensed media that ships in public/ into the database (only when a
+// column is still empty, so admin uploads and remote URLs are never touched).
+const media = seed.linkLocalMedia();
+if (media.portraits || media.anthems) {
+  console.log(`Linked local media: ${media.portraits} portrait(s), ${media.anthems} anthem recording(s).`);
 }
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -29,11 +53,14 @@ if (isProduction) {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+// Webhook gövdesi imza doğrulaması için HAM (raw) hâliyle gerekir; bu yüzden
+// JSON ayrıştırıcıdan ÖNCE yalnızca webhook yoluna raw parser bağlanır.
+app.use('/api/webhooks', express.raw({ type: '*/*', limit: '256kb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
 app.use((req, res, next) => {
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://flagcdn.com; media-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://flagcdn.com https://*.googleusercontent.com; media-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'");
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
@@ -59,8 +86,27 @@ app.use((req, res, next) => {
   let sid = /^[a-f0-9]{32}$/.test(hdr) ? hdr : req.cookies.gl_session;
   if (!sid || !/^[a-f0-9]{32}$/.test(sid)) sid = crypto.randomBytes(16).toString('hex');
   if (req.cookies.gl_session !== sid) res.cookie('gl_session', sid, { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 365 * 86400000, path: '/' });
+  // Cihaz kimliği: tarayıcı parmak izi gönderemezse (JS kapalı, eski tarayıcı)
+  // oy limiti bu çerez üzerinden cihaza bağlanır. Süresi oturumdan uzundur.
+  let dev = req.cookies.gl_device;
+  if (!/^[a-f0-9]{32}$/.test(String(dev || ''))) {
+    dev = crypto.randomBytes(16).toString('hex');
+    res.cookie('gl_device', dev, { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 730 * 86400000, path: '/' });
+  }
   res.setHeader('X-GL-Session', sid);
   req.sessionId = sid;
+  next();
+});
+
+const STATIC_RE = /^\/(css|js|img|fonts|flags|portraits|audio|uploads|og|icon|manifest|robots|sitemap|favicon|\.well-known)/i;
+// Sayfa görüntülemesi ölçümü: yalnızca HTML sayfaları, bot trafiği hariç.
+// Kayıt başarılı yanıttan (2xx) sonra kuyruğa girer; isteği yavaşlatmaz.
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  const p = String(req.path || '/');
+  if (p.startsWith('/api') || p.startsWith('/admin') || STATIC_RE.test(p) || /\.[a-z0-9]{2,5}$/i.test(p)) return next();
+  if (analytics.isBot(req)) return next();
+  res.on('finish', () => { if (res.statusCode >= 200 && res.statusCode < 300) analytics.recordView(req, p); });
   next();
 });
 
@@ -70,6 +116,78 @@ app.use('/api', api);
 app.use('/api/admin', admin);
 
 app.get('/og/leader/:slug.svg', (req, res) => { const svg = render.ogCard(req.params.slug); if (!svg) return res.status(404).end(); res.type('image/svg+xml').set('Cache-Control', 'public, max-age=120').send(svg); });
+
+// Sosyal önizleme kartı (PNG): WhatsApp/X/Telegram SVG göstermediği için
+// paylaşılan bağlantılarda görselin çıkmasını sağlar. sharp yoksa 404 döner
+// ve meta etiketi SVG'ye işaret eder (render.js karar verir).
+app.get('/og/leader/:slug.png', async (req, res) => {
+  if (!graphics.available()) return res.status(404).end();
+  const leader = core.leaderProfile(req.params.slug);
+  if (!leader) return res.status(404).end();
+  try {
+    const card = await graphics.leaderCardPng(leader);
+    if (!card) return res.status(404).end();
+    res.type(card.contentType).set('Cache-Control', 'public, max-age=3600, immutable').sendFile(card.file);
+  } catch (e) { console.error('og_card_failed', e && e.message); res.status(500).end(); }
+});
+// Genel site paylaşım kartı + ülke kartı: lider dışındaki sayfalar da
+// sosyal medyada görselsiz kalmasın.
+app.get('/og/site.png', async (req, res) => {
+  if (!graphics.available()) return res.status(404).end();
+  try {
+    const card = await graphics.siteCardPng({
+      key: 'site',
+      title: "WHO IS THE WORLD'S MOST INFLUENTIAL LEADER?",
+      subtitle: 'The world votes. The ranking moves — live.',
+      stats: `${num(core.globalStats().totalVotes)} votes cast so far`
+    });
+    if (!card) return res.status(404).end();
+    res.type(card.contentType).set('Cache-Control', 'public, max-age=3600').sendFile(card.file);
+  } catch (e) { console.error('og_site_failed', e && e.message); res.status(500).end(); }
+});
+app.get('/og/country/:code.png', async (req, res) => {
+  if (!graphics.available()) return res.status(404).end();
+  const code = String(req.params.code || '').toUpperCase().slice(0, 2);
+  const country = db.prepare('SELECT code,name FROM countries WHERE code=?').get(code);
+  if (!country) return res.status(404).end();
+  const agg = db.prepare(`SELECT COUNT(*) leaders, COALESCE(SUM(total_votes),0) votes FROM leaders WHERE country_code=? AND visible=1`).get(code);
+  try {
+    const card = await graphics.siteCardPng({
+      key: `country-${code.toLowerCase()}`,
+      title: country.name,
+      subtitle: 'Country ranking — every vote moves the world list.',
+      stats: `${num(agg.leaders)} leaders · ${num(agg.votes)} votes`
+    });
+    if (!card) return res.status(404).end();
+    res.type(card.contentType).set('Cache-Control', 'public, max-age=3600').sendFile(card.file);
+  } catch (e) { console.error('og_country_failed', e && e.message); res.status(500).end(); }
+});
+
+// Aplikasyon simgesi ve PWA manifesti (mobilde "ana ekrana ekle" düzgün çalışsın).
+const serveIcon = size => async (req, res) => {
+  if (!graphics.available()) return res.redirect(302, '/icon.svg');
+  try {
+    const icon = await graphics.iconPng(size);
+    if (!icon) return res.redirect(302, '/icon.svg');
+    res.type(icon.contentType).set('Cache-Control', 'public, max-age=604800, immutable').sendFile(icon.file);
+  } catch { res.redirect(302, '/icon.svg'); }
+};
+app.get('/favicon.ico', serveIcon(64));
+app.get('/apple-touch-icon.png', serveIcon(180));
+app.get('/icon-192.png', serveIcon(192));
+app.get('/icon-512.png', serveIcon(512));
+app.get('/manifest.json', (req, res) => {
+  res.type('application/manifest+json').set('Cache-Control', 'public, max-age=86400').json({
+    name: 'Global Leaders Live', short_name: 'GL Live',
+    description: "Live global ranking of the world's most influential leaders.",
+    start_url: '/', display: 'standalone', background_color: '#0b1220', theme_color: '#0b1220',
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+    ]
+  });
+});
+
 app.get('/portrait/:slug.svg', (req, res) => { const svg = render.portraitSvg(req.params.slug); if (!svg) return res.status(404).end(); res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(svg); });
 
 app.get('/fragment/leaders', (req, res) => {
@@ -77,7 +195,8 @@ app.get('/fragment/leaders', (req, res) => {
   const safeOffset = Math.max(0, Math.min(100000, Number.parseInt(req.query.offset, 10) || 0));
   const country = req.query.country ? String(req.query.country).toUpperCase() : null;
   if (country && !/^[A-Z]{2}$/.test(country)) return res.status(400).json({ error: 'invalid_country' });
-  const lb = core.leaderboard({ limit: 24, offset: safeOffset, category, country });
+  const q = req.query.q ? String(req.query.q).slice(0, 40) : null;
+  const lb = core.leaderboard({ limit: 24, offset: safeOffset, category, country, q });
   const names = Object.fromEntries(db.prepare('SELECT code,name FROM countries').all().map(c => [c.code, c.name]));
   lb.rows.forEach(r => r.countryName = names[r.country_code]);
   res.json({ html: lb.rows.map(render.leaderCard).join(''), hasMore: (safeOffset + 24) < lb.total });
@@ -85,7 +204,12 @@ app.get('/fragment/leaders', (req, res) => {
 
 const send = (res, html) => html ? res.type('html').send(html) : res.status(404).type('html').send(notFound());
 app.get('/', (req, res) => send(res, render.homePage()));
-app.get('/leaders', (req, res) => { const category = String(req.query.category || 'all').slice(0, 40); const cat = db.prepare('SELECT name FROM categories WHERE id=?').get(category); send(res, render.leadersPage({ category, title: cat ? cat.name : 'All Leaders' })); });
+app.get('/leaders', (req, res) => {
+  const category = String(req.query.category || 'all').slice(0, 40);
+  const q = String(req.query.q || '').trim().slice(0, 40);
+  const cat = db.prepare('SELECT name FROM categories WHERE id=?').get(category);
+  send(res, render.leadersPage({ category, q, title: q ? `Search: ${q}` : (cat ? cat.name : 'All Leaders') }));
+});
 app.get('/history', (req, res) => send(res, render.leadersPage({ category: 'historical', title: 'Historical Leaders', nav: 'HISTORY', pathUrl: '/history' })));
 app.get('/leader/:slug', (req, res) => send(res, render.leaderPage(req.params.slug)));
 app.get('/countries', (req, res) => send(res, render.countriesPage()));
@@ -115,4 +239,11 @@ app.use((req, res) => res.status(404).type('html').send(notFound()));
 app.use((err, req, res, next) => { console.error(err); if (res.headersSent) return next(err); res.status(500).json({ error: 'internal_error' }); });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`GLOBAL LEADERS LIVE running on 0.0.0.0:${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`GLOBAL LEADERS LIVE running on 0.0.0.0:${PORT}`);
+  const wallet = process.env.CRYPTO_WALLET_ADDRESS || '';
+  if (wallet && process.env.CRYPTO_NETWORK !== 'ERC20' && !require('./services/onchain').isValidTronAddress(wallet)) {
+    console.warn('⚠️  CRYPTO_WALLET_ADDRESS is set but does not look like a valid TRON (TRC20) address — crypto checkout is blocked until it is fixed.');
+  }
+  if (!process.env.STRIPE_SECRET_KEY) console.warn('ℹ️  STRIPE_SECRET_KEY is not set — the card payment option stays hidden.');
+});

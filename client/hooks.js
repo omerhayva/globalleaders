@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
-const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// matchMedia her ortamda bulunmaz (jsdom, eski tarayıcılar): varlığı kontrol edilir.
+const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Sayı yumuşakça yuvarlanarak hedefe ulaşsın (SSR rollNumber davranışının React ikizi).
 // Tüm adacıklar (liderlik, istatistik halkaları) ortak kullanır.

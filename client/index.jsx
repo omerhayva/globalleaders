@@ -2,7 +2,8 @@ import { createRoot } from 'react-dom/client';
 import { actions, getState } from './store.js';
 import { api } from './api.js';
 import { Toasts, Confetti } from './ui/Toasts.jsx';
-import { ModalHost } from './ui/modals.jsx';
+import { ModalHost, PaymentReturnWatcher } from './ui/modals.jsx';
+import { initDevice } from './device.js';
 import { HeaderActions } from './ui/HeaderActions.jsx';
 import { Leaderboard } from './ui/Leaderboard.jsx';
 import { StatsRings } from './ui/StatsRings.jsx';
@@ -20,6 +21,7 @@ window.GLUI = {
   openAdPurchase: slotId => actions.openModal('checkout', { kind: 'ad', reference: slotId }),
   openAnthemPurchase: cc => actions.openModal('checkout', { kind: 'anthem', reference: cc }),
   openMyVotes: () => actions.openModal('myvotes'),
+  openSupporter: () => actions.openModal('supporter'),
   openSignIn: afterMsg => actions.openModal('signin', { afterMsg }),
   openAccount: () => actions.openModal('account'),
   getMyVotes() {
@@ -30,12 +32,48 @@ window.GLUI = {
 
 // Mount noktaları — sayfada hangi kaplar varsa o adacıklar canlanır (SSR boş kalırsa
 // adacık hiç render vermez, sayfa statik haliyle çalışmaya devam eder).
+initDevice(); // cihaz imzası ilk oy isteğinden önce hazır olsun
+
+// Google girişinden dönüş: sunucu ?signed_in=1 ya da ?google_error=<sebep>
+// ile geri yönlendirir. Adres çubuğunu temizleyip durumu tazeliyoruz.
+(() => {
+  try {
+    const q = new URLSearchParams(location.search);
+    const err = q.get('google_error');
+    if (!q.get('signed_in') && !err) return;
+    const clean = new URL(location.href);
+    clean.searchParams.delete('signed_in'); clean.searchParams.delete('google_error');
+    history.replaceState({}, '', clean.pathname + (clean.search ? clean.search : '') + clean.hash);
+    if (err) {
+      const msg = { not_configured: 'Google sign-in is not enabled on this server yet.', no_email: 'Your Google account did not share an email address.', cancelled: 'Google sign-in was cancelled.', state: 'Sign-in link expired — please try again.', failed: 'Google sign-in failed. Please try again.' };
+      actions.toast('⚠ ' + (msg[err] || msg.failed), 'error', 6500);
+      return;
+    }
+    api('/api/auth/me').then(r => { if (r && r.user) { actions.setMe(r.user); actions.toast(`👑 <b>Welcome, ${esc(r.user.name)}!</b> Signed in with Google — your votes and purchases now follow this account.`, 'epic', 6500); } }).catch(() => { });
+    api('/api/session').then(actions.setSession).catch(() => { });
+    api('/api/my-votes').then(actions.setMyVotes).catch(() => { });
+  } catch { /* adres çubuğu okunamadıysa sorun değil */ }
+})();
+
+// Supporter üyeler için reklamlar gizlenir: sunucudan gelen oturum bilgisine
+// göre gövdeye sınıf eklenir (SSR sayfasında JS ile yapılır, ek istek yok).
+try {
+  const applySupporter = () => {
+    const s = getState().session;
+    document.body.classList.toggle('is-supporter', !!(s && s.supporter && s.supporter.active));
+  };
+  applySupporter();
+  let last = getState().session;
+  setInterval(() => { if (getState().session !== last) { last = getState().session; applySupporter(); } }, 1500);
+} catch { /* tarayıcı dışı ortam */ }
+
 const reactRoot = createRoot(document.getElementById('react-root') || document.createElement('div'));
 reactRoot.render(
   <StrictMode>
     <Toasts />
     <Confetti />
     <ModalHost />
+    <PaymentReturnWatcher />
     <HeaderActions />
   </StrictMode>
 );

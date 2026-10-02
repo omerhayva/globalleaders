@@ -1,7 +1,15 @@
 // Seeding: countries, categories, leaders and production-safe defaults.
 // Demo vote helpers remain available only as local development utilities.
+const fs = require('fs');
+const path = require('path');
 const db = require('./db');
+const { fold } = require('./services/text-fold');
 const LEADERS = require('./data/leaders-seed');
+
+const PORTRAIT_DIR = path.join(__dirname, '..', 'public', 'portraits');
+const ANTHEM_DIR = path.join(__dirname, '..', 'public', 'anthems');
+const IMAGE_EXT = /\.(jpe?g|png|webp|gif|avif)$/i;
+const AUDIO_EXT = /\.(mp3|ogg|oga|opus|wav|m4a)$/i;
 
 const ANTHEMS = {
   TR:'İstiklal Marşı', US:'The Star-Spangled Banner', GB:'God Save the King', FR:'La Marseillaise',
@@ -31,6 +39,7 @@ const slugify = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCa
 const dayStr = (offset = 0) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
 
 function seedAll({ withDemoVotes = false } = {}) {
+  backfillNameSearch();
   const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
   const tx = db.transaction(() => {
     const insCat = db.prepare('INSERT OR REPLACE INTO categories (id,name,sort) VALUES (?,?,?)');
@@ -38,8 +47,10 @@ function seedAll({ withDemoVotes = false } = {}) {
     const codes = [...new Set(LEADERS.map(l => l.cc))];
     const insCountry = db.prepare('INSERT OR IGNORE INTO countries (code,name,anthem_title) VALUES (?,?,?)');
     codes.forEach(cc => insCountry.run(cc, regionNames.of(cc) || cc, ANTHEMS[cc] || 'National Anthem'));
-    const insLeader = db.prepare(`INSERT OR IGNORE INTO leaders (slug,name,country_code,status,categories,era,years,title,bio) VALUES (?,?,?,?,?,?,?,?,?)`);
-    LEADERS.forEach(l => insLeader.run(slugify(l.name), l.name, l.cc, l.status, JSON.stringify(l.cats), l.era, l.years, l.title, l.bio));
+    const insLeader = db.prepare(`INSERT OR IGNORE INTO leaders (slug,name,country_code,status,categories,era,years,title,bio,name_search) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    LEADERS.forEach(l => insLeader.run(slugify(l.name), l.name, l.cc, l.status, JSON.stringify(l.cats), l.era, l.years, l.title, l.bio, fold(l.name)));
+    // Daha önce eklenmiş kayıtların arama alanı boşsa doldur (idempotent).
+    db.prepare(`UPDATE leaders SET name_search=? WHERE id=? AND (name_search IS NULL OR name_search='')`);
     const insSlot = db.prepare('INSERT OR IGNORE INTO advertising_slots (id,label,price_usd) VALUES (?,?,5.0)');
     [['top-left','Top Left'],['top-right','Top Right'],['bottom-left','Bottom Left'],['bottom-right','Bottom Right']].forEach(([id,label]) => insSlot.run(id,label));
     const insSet = db.prepare('INSERT OR IGNORE INTO site_settings (key,value) VALUES (?,?)');
@@ -49,6 +60,50 @@ function seedAll({ withDemoVotes = false } = {}) {
     if (withDemoVotes) seedDemoVotes();
   });
   tx();
+}
+
+// The repository ships the licensed portrait/anthem media under public/, but the
+// database only learns about them when the fetch/localize scripts run. This wires
+// the already-committed local files into empty DB columns on boot so a fresh
+// install (or a restored database) shows real portraits and anthem recordings
+// instead of generated placeholders. It never overwrites admin uploads or remote
+// URLs — only NULL/empty values are filled.
+function linkLocalMedia() {
+  const stats = { portraits: 0, anthems: 0 };
+  const readDir = (dir, re) => {
+    const map = new Map();
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { return map; }
+    for (const file of files) {
+      const m = re.exec(file);
+      if (!m) continue;
+      const key = file.slice(0, -m[0].length);
+      const current = map.get(key);
+      // Prefer mp3 over other containers (better browser support), first match wins otherwise.
+      if (!current || (/\.mp3$/i.test(file) && !/\.mp3$/i.test(current))) map.set(key, file);
+    }
+    return map;
+  };
+  const tx = db.transaction(() => {
+    const portraits = readDir(PORTRAIT_DIR, IMAGE_EXT);
+    if (portraits.size) {
+      const upd = db.prepare(`UPDATE leaders SET portrait=? WHERE slug=? AND (portrait IS NULL OR portrait='')`);
+      for (const row of db.prepare(`SELECT slug FROM leaders WHERE portrait IS NULL OR portrait=''`).all()) {
+        const file = portraits.get(row.slug);
+        if (file && upd.run('/portraits/' + file, row.slug).changes) stats.portraits++;
+      }
+    }
+    const anthems = readDir(ANTHEM_DIR, AUDIO_EXT);
+    if (anthems.size) {
+      const upd = db.prepare(`UPDATE countries SET anthem_audio=? WHERE code=? AND (anthem_audio IS NULL OR anthem_audio='')`);
+      for (const row of db.prepare(`SELECT code FROM countries WHERE anthem_audio IS NULL OR anthem_audio=''`).all()) {
+        const file = anthems.get(row.code.toLowerCase());
+        if (file && upd.run('/anthems/' + file, row.code).changes) stats.anthems++;
+      }
+    }
+  });
+  tx();
+  return stats;
 }
 
 function seedDemoVotes() {
@@ -81,6 +136,15 @@ function seedDemoVotes() {
     updVotes.run(total, l.id); updCountry.run(total, l.country_code);
   }
   recomputeRanks(true); seedRankHistory();
+}
+
+// Arama alanı boş kalan liderleri doldurur (eski veritabanları ve topluluk
+// önerileri için). Ucuz ve idempotenttir.
+function backfillNameSearch() {
+  const rows = db.prepare(`SELECT id,name FROM leaders WHERE name_search IS NULL OR name_search=''`).all();
+  const upd = db.prepare('UPDATE leaders SET name_search=? WHERE id=?');
+  for (const r of rows) upd.run(fold(r.name), r.id);
+  return rows.length;
 }
 
 function recomputeRanks(initial = false) {
@@ -122,4 +186,4 @@ function resetDemoData() {
   }); tx(); seedDemoVotes();
 }
 
-module.exports = { seedAll, seedDemoVotes, clearDemoVotes, resetDemoData, recomputeRanks, slugify, dayStr };
+module.exports = { seedAll, linkLocalMedia, seedDemoVotes, clearDemoVotes, resetDemoData, recomputeRanks, backfillNameSearch, slugify, dayStr };

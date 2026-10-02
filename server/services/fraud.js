@@ -21,6 +21,7 @@ function cleanup(now) {
   lastCleanup = now;
   for (const [k, until] of suspendedIps) if (until <= now) suspendedIps.delete(k);
   for (const [k, ts] of lastVoteAt) if (now - ts > 24 * 3600_000) lastVoteAt.delete(k);
+  for (const [k] of subnetDayCounts) if (now - Date.parse(k.slice(k.length - 10)) > 2 * 86400_000) subnetDayCounts.delete(k);
   for (const [k, value] of ipDayCounts) {
     if (k.endsWith(':vel')) {
       const recent = value.filter(t => now - t < 120000);
@@ -39,8 +40,14 @@ function logFraud(kind, sessionId, ipHash, detail) {
 const VOTE_COOLDOWN_MS = 1200;
 const IP_DAILY_CAP = 80;
 const SUSPEND_MS = 15 * 60 * 1000;
+// Aynı /24 alt ağından (ör. tek bir mobil operatör NAT'ı veya VPN çıkışı)
+// günde verilebilecek en fazla BEDAVA oy. Cihaz parmak izi ana korumadır; bu
+// sınır, parmak izini sürekli değiştiren otomatik saldırıları durdurur.
+// 0 = kapalı. Ortam değişkeniyle ayarlanır.
+const SUBNET_FREE_CAP = Number(process.env.FREE_VOTES_PER_SUBNET_PER_DAY || 40);
+const subnetDayCounts = new Map();
 
-function checkVote({ ip, sessionId, day }) {
+function checkVote({ ip, sessionId, day, subnet = null }) {
   const now = Date.now();
   cleanup(now);
   const ipHash = hash(ip);
@@ -62,6 +69,16 @@ function checkVote({ ip, sessionId, day }) {
     return { ok: false, reason: 'daily_cap', ipHash };
   }
 
+  // Alt ağ üst sınırı: yalnızca bedava oyları sayar (satın alınan/bonus oylar serbest).
+  if (subnet && SUBNET_FREE_CAP > 0) {
+    const subKey = hash('sub:' + subnet) + day;
+    const used = subnetDayCounts.get(subKey) || 0;
+    if (used >= SUBNET_FREE_CAP) {
+      logFraud('subnet_cap', sessionId, ipHash, `subnet=${subnet} count=${used}`);
+      return { ok: false, reason: 'daily_cap', ipHash };
+    }
+  }
+
   const velKey = ipHash + ':vel';
   const arr = (ipDayCounts.get(velKey) || []).filter(t => now - t < 120000);
   arr.push(now);
@@ -73,11 +90,15 @@ function checkVote({ ip, sessionId, day }) {
   return { ok: true, ipHash };
 }
 
-function recordVote(ipHash, day, n = 1) {
+function recordVote(ipHash, day, n = 1, { subnet = null, freeOnly = false } = {}) {
   const now = Date.now();
   lastVoteAt.set(ipHash, now);
   const key = ipHash + day;
   ipDayCounts.set(key, (ipDayCounts.get(key) || 0) + n);
+  if (subnet && SUBNET_FREE_CAP > 0 && freeOnly) {
+    const subKey = hash('sub:' + subnet) + day;
+    subnetDayCounts.set(subKey, (subnetDayCounts.get(subKey) || 0) + n);
+  }
 }
 
 function checkReferral({ shareId, visitorIp, ownerSession }) {
@@ -92,4 +113,4 @@ function checkReferral({ shareId, visitorIp, ownerSession }) {
   return { ok: true, ipHash };
 }
 
-module.exports = { hash, checkVote, recordVote, checkReferral, logFraud };
+module.exports = { hash, checkVote, recordVote, checkReferral, logFraud, SUBNET_FREE_CAP };

@@ -27,7 +27,15 @@ const BASE = 'http://localhost:3000';
       window.EventSource = class { constructor() { } addEventListener() { } close() { } };
       window.HTMLMediaElement.prototype.play = () => Promise.resolve();
       window.scrollTo = () => { };
-      window.fetch = (url, opts) => fetch(url.startsWith('http') ? url : BASE + url, opts);
+      // Anti-abuse "cihaz" kimliği (IP + user-agent) ile hesaplanır. Her test
+      // koşusu benzersiz bir user-agent gönderir; böylece önceki koşuların
+      // cihaz limiti birikmez ve oy akışı deterministik kalır.
+      const RUN_UA = `GL-Test/${process.pid}-${Date.now()}`;
+      // Cihaz kimliği artık oy limitlerinin anahtarı: her test koşusu YENİ bir
+      // cihaz sayılmalı, yoksa jsdom'un sabit parmak izi yüzünden önceki
+      // koşuların hakkı birikir ve oy akışı yanlış yere "limit doldu" der.
+      window.__GL_DEVICE__ = require('crypto').randomBytes(16).toString('hex');
+      window.fetch = (url, opts) => fetch(url.startsWith('http') ? url : BASE + url, { ...(opts || {}), headers: { ...((opts && opts.headers) || {}), 'user-agent': RUN_UA } });
       Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: () => Promise.resolve() } });
     }
   });
@@ -98,7 +106,7 @@ const BASE = 'http://localhost:3000';
   GLUI.openBuyVotes();
   await sleep(400);
   modal = document.querySelector('#modals .modal');
-  ok(!!modal && /Buy vote packs/.test(modal.textContent) && modal.querySelectorAll('.pack').length === 2, 'oy paketi modalı + 2 paket');
+  ok(!!modal && /Buy vote packs/.test(modal.textContent) && modal.querySelectorAll('.pack').length === 3, 'oy paketi modalı + 3 paket');
   modal.querySelector('.close').click(); await sleep(50);
 
   GLUI.openMyVotes();
@@ -110,7 +118,7 @@ const BASE = 'http://localhost:3000';
   GLUI.openSignIn();
   await sleep(300);
   modal = document.querySelector('#modals .modal');
-  ok(!!modal && /Join the arena/.test(modal.textContent) && modal.querySelector('#authBtn') === null, 'giriş modalı');
+  ok(!!modal && /Welcome back/.test(modal.textContent) && modal.querySelector('#authBtn') === null, 'giriş modalı (gerçek hesap girişi)');
   ok(modal.querySelectorAll('.btn-social').length === 2, 'sosyal giriş düğmeleri (X/Google demo)');
   modal.querySelector('.close').click(); await sleep(50);
 
@@ -130,23 +138,31 @@ const BASE = 'http://localhost:3000';
   const mv = await GLUI.getMyVotes();
   ok(Array.isArray(mv), 'getMyVotes() liste döndürdü (' + mv.length + ' oy)');
 
-  console.log('— Uçtan uca akış: paket satın alma (React modalı) → oy —');
+  console.log('— Uçtan uca akış: kripto soğuk cüzdan ödemesi (React modalı) —');
   modal.querySelector('.close').click(); await sleep(50);
   GLUI.openBuyVotes();
   await sleep(400);
   modal = document.querySelector('#modals .modal');
   const packs = modal && modal.querySelectorAll('.pack');
-  ok(packs && packs.length === 2, 'oy paketi modalı açıldı (2 paket)');
-  if (packs && packs.length === 2) {
-    packs[1].click(); await sleep(50); // 60 OY paketi seç
+  ok(packs && packs.length === 3, 'oy paketi modalı açıldı (3 paket)');
+  if (packs && packs.length === 3) {
+    packs[1].click(); await sleep(600); // 60 OY paketi seç + niyet isteği gelsin
+    const setInput = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(el, value);
+      el.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+    const txInput = modal.querySelector('.paybox input');
+    ok(!!txInput, txInput ? 'soğuk cüzdan ödeme formu render edildi' : 'soğuk cüzdan ödeme formu görünmedi');
+    if (txInput) { setInput(txInput, 'TESTTXHASH0000000000000000000000'); await sleep(80); }
     const buyBtn = modal.querySelector('.btn-gold.big');
-    buyBtn.click();
-    await sleep(900); // intent + confirm
-    const pillAfter = document.querySelector('#votesPill');
-    const bought = /\+60|votes added/i.test(document.body.textContent) || /60/.test(pillAfter ? pillAfter.textContent : '');
-    ok(bought || limited(), bought
-      ? 'paket satın alındı (bildirim/hap güncellendi: "' + (pillAfter ? pillAfter.textContent : '-') + '")'
-      : 'intent hız sınırı devrede — satın alma reddedildi (koruma), React akışı yürüdü');
+    ok(!!buyBtn && !buyBtn.disabled, 'ödeme gönderme düğmesi işlem hash’i ile etkinleşti');
+    if (buyBtn && !buyBtn.disabled) buyBtn.click();
+    await sleep(1000); // intent + confirm
+    const pendingMsg = /Payment submitted|pending verification|verified/i.test(document.body.textContent);
+    ok(pendingMsg || limited(), pendingMsg
+      ? 'ödeme gönderildi → manuel doğrulama bekliyor (kripto akışı uçtan uca çalıştı)'
+      : 'intent hız sınırı devrede — ödeme reddedildi (koruma), React akışı yürüdü');
   }
 
   console.log('— Uçtan uca oy akışı (React modalından) —');

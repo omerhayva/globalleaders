@@ -3,7 +3,9 @@ const crypto = require('crypto');
 const db = require('./db');
 const sse = require('./services/sse');
 const fraud = require('./services/fraud');
+const subscriptions = require('./services/subscriptions');
 const { recomputeRanks, dayStr } = require('./seed');
+const { fold } = require('./services/text-fold');
 
 const getSetting = k => (db.prepare('SELECT value FROM site_settings WHERE key=?').get(k) || {}).value;
 const setSetting = (k, v) => db.prepare('INSERT OR REPLACE INTO site_settings (key,value) VALUES (?,?)').run(k, String(v));
@@ -14,12 +16,28 @@ const FLAG = cc => String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1A
 function getOrCreateVoteSession(sessionId, ip, ua) {
   const day = dayStr();
   const id = sessionId + ':' + day;
-  db.prepare(`INSERT OR IGNORE INTO vote_sessions (id,session_id,day,ip,ua_hash) VALUES (?,?,?,?,?)`)
-    .run(id, sessionId, day, fraud.hash(ip), fraud.hash(ua || ''));
-  return db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
+  let vs = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
+  if (!vs) {
+    // Satın alınan oylar ASLA süresi dolmaz: önceki günlerden kalan bakiye
+    // yeni günün satırına devredilir (bonus ve bedava oylar günlük kalır).
+    // Devir sırasında kaynak satırlar SIFIRLANIR; aksi hâlde bakiye her gün
+    // yeniden toplanıp katlanarak çoğalırdı.
+    const carry = db.prepare(`SELECT COALESCE(SUM(MAX(purchased - purchased_used, 0)),0) s
+                              FROM vote_sessions WHERE session_id=? AND day<>?`).get(sessionId, day).s;
+    if (carry > 0) db.prepare('UPDATE vote_sessions SET purchased=0, purchased_used=0 WHERE session_id=? AND day<>?').run(sessionId, day);
+    db.prepare(`INSERT OR IGNORE INTO vote_sessions (id,session_id,day,ip,ua_hash,purchased) VALUES (?,?,?,?,?,?)`)
+      .run(id, sessionId, day, fraud.hash(ip), fraud.hash(ua || ''), carry);
+    vs = db.prepare('SELECT * FROM vote_sessions WHERE id=?').get(id);
+  }
+  return vs;
+}
+// Günlük bedava oy kotası: normal ziyaretçi 1, Supporter üye daha fazla.
+function freeVotesPerDay(sessionId) {
+  const base = parseInt(getSetting('free_votes_per_day') || '1', 10);
+  try { return base + subscriptions.bonusFreeVotes(sessionId); } catch { return base; }
 }
 function remainingVotes(vs) {
-  const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
+  const free = freeVotesPerDay(vs && vs.session_id);
   return Math.max(0, free - vs.free_used)
     + Math.max(0, vs.bonus_earned - vs.bonus_used)
     + Math.max(0, (vs.purchased || 0) - (vs.purchased_used || 0));
@@ -30,16 +48,17 @@ function remainingVotes(vs) {
 // Ayrıca CIHAZ bazlı limit: bedava ve bonus oylar, aynı IP+UA parmak izinden
 // günde en fazla ekonomi izin verdiği kadar harcanabilir. Bu, X-GL-Session
 // başlığını değiştirerek (oturum rotasyonu) sınırsız bedava oy atmayı engeller.
-function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
+function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web', deviceKey = null, subnet = null }) {
   count = Math.max(1, Math.min(10, parseInt(count, 10) || 1));
   const leader = db.prepare(`SELECT * FROM leaders WHERE slug=? AND visible=1`).get(leaderSlug);
   if (!leader) return { error: 'leader_not_found' };
 
   const day = dayStr();
-  const chk = fraud.checkVote({ ip, sessionId, day });
+  const chk = fraud.checkVote({ ip, sessionId, day, subnet });
   if (!chk.ok) return { error: chk.reason };
 
-  const deviceHash = fraud.hash(String(ip) + '|' + String(ua || ''));
+  // Cihaz imzası çağıran taraftan gelir (parmak izi > cihaz çerezi > IP+UA).
+  const deviceHash = deviceKey || fraud.hash(String(ip) + '|' + String(ua || ''));
   const oldRank = leader.rank;
   const allocation = db.transaction(() => {
     const vs = getOrCreateVoteSession(sessionId, ip, ua);
@@ -49,7 +68,7 @@ function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
     if (remaining <= 0) return { error: 'no_votes_left', remaining: 0 };
     const requested = Math.min(count, remaining);
 
-    const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
+    const free = freeVotesPerDay(sessionId); // Supporter üyelerde daha yüksek
     const bonusCap = parseInt(getSetting('max_bonus_per_day') || '3', 10);
     const deviceFreeUsed = db.prepare(
       `SELECT COUNT(*) c FROM votes WHERE device_hash=? AND type='free' AND created_at >= ?`
@@ -81,12 +100,13 @@ function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web' }) {
     db.prepare(`INSERT INTO leader_daily_stats (leader_id,day,votes,shares) VALUES (?,?,?,0)
                 ON CONFLICT(leader_id,day) DO UPDATE SET votes=votes+excluded.votes`).run(leader.id, day, spendable);
 
-    return { ok: true, count: spendable, vsId: vs.id };
+    return { ok: true, count: spendable, vsId: vs.id, freeOnly: bonusToUse === 0 && purchasedToUse === 0 };
   })();
 
   if (allocation.error) return allocation;
   const countApplied = allocation.count;
-  fraud.recordVote(chk.ipHash, day, countApplied);
+  // Alt ağ sayacı yalnızca bedava oylarda artar (satın alınan/bonus sınırlanmaz).
+  fraud.recordVote(chk.ipHash, day, countApplied, { subnet, freeOnly: !!allocation.freeOnly });
 
   const changes = recomputeRanks();
   const updated = db.prepare('SELECT rank,total_votes FROM leaders WHERE id=?').get(leader.id);
@@ -174,9 +194,14 @@ function registerShare({ sessionId, ip, leaderSlug, platform }) {
 // ---------- queries ----------
 const leaderCols = `id,slug,name,country_code,status,categories,era,years,title,bio,portrait,featured,verified,community,total_votes,rank,prev_rank`;
 
-function leaderboard({ limit = 10, offset = 0, category = null, country = null } = {}) {
+function leaderboard({ limit = 10, offset = 0, category = null, country = null, q = null } = {}) {
   let where = 'visible=1'; const args = [];
   if (country) { where += ' AND country_code=?'; args.push(country); }
+  if (q) {
+    // Aksansız arama: kullanıcı "erdogan" yazsa da "Erdoğan" bulunur.
+    const term = fold(String(q).slice(0, 40)).replace(/[%_\\]/g, ch => '\\' + ch);
+    where += " AND COALESCE(name_search, LOWER(name)) LIKE ? ESCAPE '\\'"; args.push('%' + term + '%');
+  }
   if (category && category !== 'all') {
     if (category === 'current' || category === 'historical') { where += ' AND status=?'; args.push(category); }
     else { where += ` AND categories LIKE ?`; args.push(`%\"${category}\"%`); }
@@ -189,11 +214,18 @@ function leaderboard({ limit = 10, offset = 0, category = null, country = null }
 }
 
 const stmtCountryName = db.prepare('SELECT name FROM countries WHERE code=?');
+// Sıra numarası (rank) NULL kalırsa — örn. hiç oy yokken taze kurulumda —
+// görünen liderler arasından yerinde hesaplanır. Aksi hâlde arayüzde "null"
+// yazardı. Sıralama kuralı recomputeRanks ile aynıdır: oy çokluğu, eşitlikte id.
+const stmtRankFor = db.prepare(`SELECT COUNT(*)+1 AS r FROM leaders
+  WHERE visible=1 AND (total_votes > ? OR (total_votes = ? AND id < ?))`);
+
 function decorate(r, globalTotal) {
   const spark = db.prepare('SELECT votes FROM leader_daily_stats WHERE leader_id=? ORDER BY day DESC LIMIT 7').all(r.id)
     .map(x => x.votes).reverse();
+  const rank = (r.rank == null) ? stmtRankFor.get(r.total_votes, r.total_votes, r.id).r : r.rank;
   return {
-    ...r, categories: JSON.parse(r.categories || '[]'),
+    ...r, rank, categories: JSON.parse(r.categories || '[]'),
     flag: FLAG(r.country_code),
     countryName: (stmtCountryName.get(r.country_code) || {}).name,
     pct: globalTotal ? +(100 * r.total_votes / globalTotal).toFixed(2) : 0,
@@ -295,5 +327,4 @@ module.exports = {
   getSetting, setSetting, FLAG, getOrCreateVoteSession, remainingVotes, castVotes,
   registerShare, leaderboard, leaderProfile, countryInfo, globalStats, trending,
   countriesMapData, pushActivity, recentActivity, decorate, logRankHistoryToday,
-  myVotes, featuredAnthem
-};
+  myVotes, featuredAnthem, freeVotesPerDay };

@@ -4,7 +4,10 @@ const fs = require('fs');
 
 const DATA_DIR = path.join(__dirname, '..', 'var');
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const db = new Database(path.join(DATA_DIR, 'globalleaders.db'));
+// GL_DB_FILE lets automated tests use a throwaway database instead of var/.
+const DB_FILE = process.env.GL_DB_FILE || path.join(DATA_DIR, 'globalleaders.db');
+if (process.env.GL_DB_FILE) fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -111,12 +114,21 @@ CREATE TABLE IF NOT EXISTS vote_idempotency (
   created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (session_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_vote_idempotency_created ON vote_idempotency(created_at);
+-- Kayıt / giriş / başarısız giriş olayları: panelde "kim ne zaman giriş yaptı"
+CREATE TABLE IF NOT EXISTS login_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER, kind TEXT, identifier TEXT, ip_hash TEXT, ua_hash TEXT, detail TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_login_events_time ON login_events(created_at);
 `);
 
 const addCol = (table, colDef) => {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`); }
   catch (err) { if (!/duplicate column name/i.test(String(err && err.message))) throw err; }
 };
+addCol('payments', 'identity_key TEXT'); // oy bakiyesinin bağlandığı kimlik (cihaz/hesap)
+addCol('payments', 'user_id INTEGER');   // satın alan üye (abonelik için şart)
 addCol('vote_sessions', 'purchased INTEGER DEFAULT 0');
 addCol('vote_sessions', 'purchased_used INTEGER DEFAULT 0');
 addCol('anthem_slots', 'sponsor_x TEXT');
@@ -124,8 +136,12 @@ addCol('anthem_purchases', 'sponsor_x TEXT');
 addCol('advertisements', 'x_handle TEXT');
 addCol('leaders', 'community INTEGER DEFAULT 0');
 addCol('leaders', 'suggested_by TEXT');
+// Aranabilir isim (aksansız/küçük harf): "erdogan" → "Erdoğan" eşleşsin diye.
+addCol('leaders', 'name_search TEXT');
 addCol('vote_sessions', 'user_id INTEGER');
 addCol('users', 'username TEXT');
+addCol('users', 'google_sub TEXT');   // Google hesabının kalıcı kimliği (sub)
+addCol('users', 'avatar_url TEXT');   // Google profil fotoğrafı (varsa)
 addCol('users', 'password_hash TEXT');
 addCol('users', 'email_verified_at TEXT');
 addCol('users', 'email_verify_token_hash TEXT');
@@ -142,6 +158,9 @@ addCol('payments', 'fulfillment_key TEXT');
 addCol('payments', 'tx_hash TEXT');
 addCol('payments', 'verified_at TEXT');
 addCol('payments', 'verified_by TEXT');
+
+// Google hesabı tekil olmalı: aynı hesap iki kullanıcıya bağlanmasın.
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL');
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_verify_token ON users(email_verify_token_hash) WHERE email_verify_token_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(password_reset_token_hash) WHERE password_reset_token_hash IS NOT NULL;
@@ -150,6 +169,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_purchases_payment ON ad_purchases(payme
 CREATE UNIQUE INDEX IF NOT EXISTS idx_anthem_purchases_payment ON anthem_purchases(payment_id) WHERE payment_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_fulfillment_key ON payments(fulfillment_key) WHERE fulfillment_key IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_tx_hash ON payments(tx_hash) WHERE tx_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leaders_name_search ON leaders(name_search);
 `);
 
 module.exports = db;
