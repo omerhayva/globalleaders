@@ -1,5 +1,6 @@
 const db = require('../db');
 const core = require('../core');
+const subscriptions = require('./subscriptions');
 
 function readMeta(payment) {
   try { return payment.meta ? JSON.parse(payment.meta) : {}; } catch { return {}; }
@@ -26,7 +27,7 @@ function fulfillPayment(paymentId, adminId, verifiedAmount) {
     const fulfillmentKey = `payment:${payment.id}`; const now = new Date().toISOString(); const meta = readMeta(payment);
 
     if (payment.kind === 'votes') {
-      const packs = { 'votes-10': 10, 'votes-60': 60 }; const votes = packs[payment.reference]; if (!votes) return { error: 'pack_not_found' };
+      const packs = { 'votes-10': 10, 'votes-60': 60, 'votes-250': 250 }; const votes = packs[payment.reference]; if (!votes) return { error: 'pack_not_found' };
       const creditTo = payment.identity_key || payment.session_id; // cihaz/hesap kimliği (yoksa eski kayıt)
       const session = core.getOrCreateVoteSession(creditTo, null, null);
       db.prepare('UPDATE vote_sessions SET purchased=purchased+? WHERE id=?').run(votes, session.id);
@@ -58,12 +59,30 @@ function fulfillPayment(paymentId, adminId, verifiedAmount) {
       db.prepare(`UPDATE payments SET status='succeeded',fulfilled_at=?,fulfillment_key=?,verified_at=?,verified_by=? WHERE id=? AND status IN ('pending_verification','paid','pending')`).run(now, fulfillmentKey, now, String(adminId || 'admin'), payment.id);
       return { ok: true, kind: 'anthem', country: cc, sponsor, paymentId: payment.id };
     }
+    if (payment.kind === 'supporter') {
+      // Supporter aboneliği: Stripe abonelik modunda açılan ödeme, webhook ile
+      // geldiğinde buradan aktifleşir. Ödeme yapan kullanıcının hesabına bağlanır;
+      // hesap yoksa (kripto/elle) cihaz kimliğine bağlanır.
+      const userId = payment.user_id || (payment.identity_key && /^user-(\d+)$/.test(payment.identity_key) ? Number(payment.identity_key.slice(5)) : null)
+        || (payment.session_id && db.prepare('SELECT user_id FROM vote_sessions WHERE session_id=? AND user_id IS NOT NULL').get(payment.session_id) || {}).user_id || null;
+      const sub = subscriptions.activate({
+        userId: userId || null,
+        identityKey: payment.identity_key || payment.session_id || null,
+        provider: payment.provider === 'stripe' ? 'stripe' : (payment.provider || 'manual'),
+        stripeSubscriptionId: meta.stripeSubscriptionId || null,
+        stripeCustomerId: meta.stripeCustomerId || null,
+        priceUsd: expected, interval: 'month', days: 31
+      });
+      db.prepare(`UPDATE payments SET status='succeeded',fulfilled_at=?,fulfillment_key=?,verified_at=?,verified_by=? WHERE id=? AND status IN ('pending_verification','paid','pending')`).run(now, fulfillmentKey, now, String(adminId || 'admin'), payment.id);
+      return { ok: true, kind: 'supporter', subscriptionId: sub && sub.id, userId: userId || null, paymentId: payment.id };
+    }
     return { error: 'unsupported_payment_kind' };
   })();
 
   if (result.ok) {
     const payment = db.prepare('SELECT * FROM payments WHERE id=?').get(paymentId);
-    if (result.kind === 'ad') core.pushActivity('ad', `📢 ${result.advertiser} took over the ${result.slotId.replace('-', ' ')} ad space`, null, null);
+    if (result.kind === 'supporter') core.pushActivity('supporter', '⭐ A new supporter joined Global Leaders Live', null, null);
+    else if (result.kind === 'ad') core.pushActivity('ad', `📢 ${result.advertiser} took over the ${result.slotId.replace('-', ' ')} ad space`, null, null);
     else if (result.kind === 'anthem') { const cname = (db.prepare('SELECT name FROM countries WHERE code=?').get(result.country) || {}).name || result.country; core.pushActivity('anthem', `${core.FLAG(result.country)} ${result.sponsor} took over ${cname}'s national anthem`, result.country, null); }
     return { ...result, payment };
   }

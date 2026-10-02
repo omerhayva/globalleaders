@@ -7,7 +7,7 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const toast = (m, t = '') => { const el = document.createElement('div'); el.className = 'toast ' + t; el.innerHTML = m; $('#toasts').appendChild(el); setTimeout(() => el.remove(), 4000); };
 
-  const SECTIONS = ['Dashboard','Members','Leaders','Countries','Votes','Ads','Anthems','Payments','Shares & Referrals','Fraud','Sessions','Settings'];
+  const SECTIONS = ['Dashboard','Analytics','Members','Subscriptions','Leaders','Countries','Votes','Ads','Anthems','Payments','Shares & Referrals','Fraud','Sessions','Settings'];
   let current = 'Dashboard';
 
   async function boot() {
@@ -72,6 +72,51 @@
         </div>`;
     },
 
+    async Analytics(main) {
+      const d = await api('/analytics?days=30');
+      const bar = (v, max) => `<span style="display:inline-block;height:8px;border-radius:4px;background:linear-gradient(90deg,#38bdf8,#f5b524);width:${max ? Math.max(2, Math.round(v / max * 90)) : 2}%"></span>`;
+      const maxVisitors = Math.max(1, ...d.series.map(s => s.visitors));
+      const pct = (a, b) => b ? ((a / b) * 100).toFixed(1) + '%' : '0%';
+      const srcLabel = { direct: '🔗 Doğrudan', search: '🔍 Arama', social: '📣 Sosyal', referral: '🌐 Yönlendirme', internal: '↩ İç gezinme' };
+      main.innerHTML = `
+        <div class="kpis">
+          ${[['BUGÜN ZİYARETÇİ', num(d.visitors.today)], ['DÜN', num(d.visitors.yesterday)],
+             ['7 GÜN', num(d.visitors.week)], ['30 GÜN (MAU)', num(d.visitors.month)],
+             ['BUGÜN SAYFA', num(d.views.today)], ['DÖNEN ZİYARETÇİ', pct(d.newVsReturning.returning, d.visitors.today)],
+             ['OY / ZİYARETÇİ', d.engagement.votesPerVisitor], ['SAYFA / ZİYARETÇİ', d.engagement.viewsPerVisitor],
+             ['SATIN ALMA DÖNÜŞÜMÜ', d.revenue.conversionBuyerPct + '%'], ['GELİR / ZİYARETÇİ', '$' + d.revenue.perVisitor],
+             ['VİRAL KATSAYI (K)', d.viral.kFactor], ['7 GÜN TUTUNDURMA', d.retention.day7 + '%']]
+            .map(([l, v]) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`).join('')}
+        </div>
+        <div class="panel" style="margin-bottom:1rem"><h2>GÜNLÜK ZİYARETÇİ (30 gün)</h2>
+          <div style="display:grid;gap:4px">
+            ${d.series.slice(-30).map(s => `<div style="display:grid;grid-template-columns:88px 1fr 120px;align-items:center;gap:8px">
+              <span class="muted small">${esc(s.day)}</span>${bar(s.visitors, maxVisitors)}
+              <span class="small">${num(s.visitors)} ziyaretçi · ${num(s.views)} sayfa</span></div>`).join('') || '<p class="muted small">Henüz veri yok — site ziyaret edildikçe dolar.</p>'}
+          </div>
+        </div>
+        <div class="grid2" style="margin-bottom:1rem">
+          <div class="panel"><h2>HUNİ (30 GÜN)</h2>
+            <table class="table"><tbody>
+              <tr><td>Ziyaretçi</td><td>${num(d.funnel.visitors)}</td><td>${pct(d.funnel.visitors, d.funnel.visitors)}</td></tr>
+              <tr><td>Oy veren</td><td>${num(d.funnel.voters)}</td><td>${pct(d.funnel.voters, d.funnel.visitors)}</td></tr>
+              <tr><td>Üye olan</td><td>${num(d.funnel.signups)}</td><td>${pct(d.funnel.signups, d.funnel.visitors)}</td></tr>
+              <tr><td>Ödeme yapan</td><td>${num(d.funnel.buyers)}</td><td>${pct(d.funnel.buyers, d.funnel.visitors)}</td></tr>
+            </tbody></table>
+            <p class="muted small">Gelir: $${d.revenue.total.toFixed(2)} · alıcı başına $${d.revenue.perBuyer.toFixed(2)}</p>
+          </div>
+          <div class="panel"><h2>TRAFİK KAYNAĞI</h2>
+            ${table(['Kaynak','Sayfa','Ziyaretçi'], (d.sources || []).map(s => `<tr><td>${srcLabel[s.source] || esc(s.source)}</td><td>${num(s.views)}</td><td>${num(s.visitors)}</td></tr>`))}
+            <p class="muted small">Paylaşım: ${num(d.viral.shares)} · paylaşımdan gelen ziyaretçi: ${num(d.viral.visitorsFromShares)} · K = ${d.viral.kFactor}</p>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="panel"><h2>EN ÇOK GÖRÜNTÜLENEN SAYFALAR</h2>${table(['Sayfa','Sayfa görüntüleme','Ziyaretçi'], d.topPages.map(p => `<tr><td><code>${esc(p.path)}</code></td><td>${num(p.views)}</td><td>${num(p.visitors)}</td></tr>`))}</div>
+          <div class="panel"><h2>ÜLKELER (Accept-Language)</h2>${table(['Ülke','Ziyaretçi'], (d.countries || []).map(c => `<tr><td>${esc(c.country)}</td><td>${num(c.visitors)}</td></tr>`))}
+            <p class="muted small">Ham IP saklanmaz; ülke yalnızca tarayıcı dilinden kaba tahmin edilir.</p></div>
+        </div>`;
+    },
+
     async Members(main) {
       const d = await api('/members');
       const s = d.stats;
@@ -93,6 +138,37 @@
         list.map(m => `<tr><td>${m.id}</td><td>${esc(m.username || m.display_name || '—')}</td><td>${esc(m.email || '—')}</td><td>${esc(m.provider || 'local')}</td><td>${m.email_verified_at ? '✅' : '—'}</td><td>${esc(m.created_at)}</td><td>${num(m.votes)}</td><td>${num(m.votes_left)}</td><td>${esc(m.last_vote || '—')}</td><td>${esc(m.last_login || '—')}</td></tr>`));
       draw(d.members);
       $('#mq').oninput = () => { const q = $('#mq').value.toLowerCase(); draw(d.members.filter(m => [m.username, m.email, m.display_name].some(v => String(v || '').toLowerCase().includes(q)))); };
+    },
+
+    async Subscriptions(main) {
+      const d = await api('/subscriptions');
+      const st = d.stats;
+      main.innerHTML = `
+        <div class="kpis">
+          ${[['AKTİF DESTEKÇİ', num(st.active)], ['İPTAL EDEN', num(st.canceled)], ['AYLIK YİNELENEN GELİR (MRR)', '$' + st.mrr.toFixed(2)],
+             ['AYLIK FİYAT', '$' + st.priceUsd.toFixed(2)], ['BONUS OY / GÜN', '+' + st.bonusFreeVotes], ['REKLAMSIZ', st.adFree ? 'AÇIK' : 'KAPALI']]
+            .map(([l, v]) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`).join('')}
+        </div>
+        <div class="panel" style="margin-bottom:1rem"><h2>ELLE AKTİFLEŞTİR (havale/nakit ya da test)</h2>
+          <div style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:flex-end">
+            <div class="field" style="flex:1;min-width:220px"><label>ÜYE (kullanıcı adı veya e-posta)</label><input id="sgId" placeholder="mehmet_yilmaz"></div>
+            <div class="field" style="width:120px"><label>AY</label><input id="sgMonths" type="number" min="1" max="36" value="1"></div>
+            <button class="btn btn-vote" id="sgGo">AKTİFLEŞTİR</button>
+          </div>
+          <p class="muted small" style="margin:0.6rem 0 0">Kart ödemelerinde abonelik Stripe webhook'u ile otomatik aktifleşir; bu form yalnızca elle tahsilat içindir.</p>
+        </div>
+        <div class="panel"><h2>ABONELİKLER</h2>${table(['ID','Üye','Sağlayıcı','Durum','Dönem sonu','Fiyat','İşlem'], d.subscriptions.map(x => `<tr><td>${x.id}</td><td>${esc(x.member || x.identity_key || '—')}</td><td>${esc(x.provider || '')}</td><td>${x.status === 'active' ? '✅ aktif' : esc(x.status)}</td><td>${esc(x.current_period_end || '')}</td><td>$${Number(x.price_usd || 0).toFixed(2)}</td><td>${x.status === 'active' ? `<button class="btn btn-ghost small" data-revoke="${x.id}">İptal et</button>` : ''}</td></tr>`))}</div>`;
+      $('#sgGo').onclick = async () => {
+        const identifier = $('#sgId').value.trim(); if (!identifier) return toast('Üye adı gerekli', 'error');
+        try { const r = await api('/subscriptions/grant', { method: 'POST', body: { identifier, months: Number($('#sgMonths').value) || 1 } }); toast('Destekçi aktifleştirildi: ' + esc(r.member), 'success'); show('Subscriptions'); }
+        catch (e) { toast(e.error === 'member_or_identity_required' ? 'Üye bulunamadı' : (e.error || 'İşlem başarısız'), 'error'); }
+      };
+      main.addEventListener('click', async e => {
+        const b = e.target.closest('[data-revoke]'); if (!b) return;
+        if (!confirm('Bu aboneliği iptal et?')) return;
+        await api(`/subscriptions/${b.dataset.revoke}/revoke`, { method: 'POST', body: {} });
+        toast('Abonelik iptal edildi'); show('Subscriptions');
+      });
     },
 
     async Leaders(main) {

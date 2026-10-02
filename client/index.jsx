@@ -21,6 +21,7 @@ window.GLUI = {
   openAdPurchase: slotId => actions.openModal('checkout', { kind: 'ad', reference: slotId }),
   openAnthemPurchase: cc => actions.openModal('checkout', { kind: 'anthem', reference: cc }),
   openMyVotes: () => actions.openModal('myvotes'),
+  openSupporter: () => actions.openModal('supporter'),
   openSignIn: afterMsg => actions.openModal('signin', { afterMsg }),
   openAccount: () => actions.openModal('account'),
   getMyVotes() {
@@ -53,6 +54,18 @@ initDevice(); // cihaz imzası ilk oy isteğinden önce hazır olsun
     api('/api/my-votes').then(actions.setMyVotes).catch(() => { });
   } catch { /* adres çubuğu okunamadıysa sorun değil */ }
 })();
+
+// Supporter üyeler için reklamlar gizlenir: sunucudan gelen oturum bilgisine
+// göre gövdeye sınıf eklenir (SSR sayfasında JS ile yapılır, ek istek yok).
+try {
+  const applySupporter = () => {
+    const s = getState().session;
+    document.body.classList.toggle('is-supporter', !!(s && s.supporter && s.supporter.active));
+  };
+  applySupporter();
+  let last = getState().session;
+  setInterval(() => { if (getState().session !== last) { last = getState().session; applySupporter(); } }, 1500);
+} catch { /* tarayıcı dışı ortam */ }
 
 const reactRoot = createRoot(document.getElementById('react-root') || document.createElement('div'));
 reactRoot.render(

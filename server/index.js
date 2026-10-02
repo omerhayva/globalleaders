@@ -10,6 +10,7 @@ if (envFile.loaded) console.log(`Loaded ${envFile.loaded} variable(s) from .env`
 const db = require('./db');
 const seed = require('./seed');
 const core = require('./core');
+const analytics = require('./services/analytics');
 const num = n => Number(n || 0).toLocaleString('en-US');
 const render = require('./render');
 const graphics = require('./services/graphics-og');
@@ -94,6 +95,18 @@ app.use((req, res, next) => {
   }
   res.setHeader('X-GL-Session', sid);
   req.sessionId = sid;
+  next();
+});
+
+const STATIC_RE = /^\/(css|js|img|fonts|flags|portraits|audio|uploads|og|icon|manifest|robots|sitemap|favicon|\.well-known)/i;
+// Sayfa görüntülemesi ölçümü: yalnızca HTML sayfaları, bot trafiği hariç.
+// Kayıt başarılı yanıttan (2xx) sonra kuyruğa girer; isteği yavaşlatmaz.
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  const p = String(req.path || '/');
+  if (p.startsWith('/api') || p.startsWith('/admin') || STATIC_RE.test(p) || /\.[a-z0-9]{2,5}$/i.test(p)) return next();
+  if (analytics.isBot(req)) return next();
+  res.on('finish', () => { if (res.statusCode >= 200 && res.statusCode < 300) analytics.recordView(req, p); });
   next();
 });
 

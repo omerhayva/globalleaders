@@ -12,6 +12,8 @@ const uploads = require('./services/uploads');
 const { sanitizeUrl, cleanText } = require('./services/sanitize');
 const { fulfillPayment, rejectPayment } = require('./services/payment-fulfillment');
 const paymentVerification = require('./services/payment-verification');
+const analytics = require('./services/analytics');
+const subscriptions = require('./services/subscriptions');
 
 const router = express.Router();
 const SECRET = process.env.GL_ADMIN_SECRET;
@@ -71,7 +73,8 @@ router.get('/dashboard', (req, res) => {
       votes: 0,
       topCountries: db.prepare(`SELECT country_code cc, COALESCE(SUM(amount_usd),0) s FROM anthem_purchases GROUP BY country_code ORDER BY s DESC LIMIT 5`).all()
     },
-    topViral: db.prepare(`SELECT l.name, l.slug, COUNT(s.id) shares, COALESCE(SUM(s.clicks),0) clicks FROM shares s JOIN leaders l ON l.id=s.leader_id GROUP BY l.id ORDER BY shares DESC LIMIT 8`).all()
+    topViral: db.prepare(`SELECT l.name, l.slug, COUNT(s.id) shares, COALESCE(SUM(s.clicks),0) clicks FROM shares s JOIN leaders l ON l.id=s.leader_id GROUP BY l.id ORDER BY shares DESC LIMIT 8`).all(),
+    subscriptions: subscriptions.stats()
   });
 });
 
@@ -121,6 +124,35 @@ function memberRows({ q = '', limit = 500 } = {}) {
     WHERE u.email LIKE ? OR u.username LIKE ? OR u.display_name LIKE ?
     ORDER BY u.id DESC LIMIT ?`).all(like, like, like, limit);
 }
+// ---- TRAFİK ÖLÇÜMÜ (kendi sunucumuzda, gizliliğe saygılı) ----
+// Sayfa görüntülemeleri; ham IP/tarayıcı saklanmaz, yalnızca tuzlu cihaz imzası.
+router.get('/analytics', (req, res) => {
+  const days = Math.max(1, Math.min(180, Number(req.query.days) || 30));
+  res.json(analytics.kpis({ days }));
+});
+
+// ---- SUPPORTER ABONELİĞİ (panel) ----
+router.get('/subscriptions', (req, res) => res.json({ stats: subscriptions.stats(), subscriptions: subscriptions.list({ limit: req.query.limit }) }));
+
+// Elle aktifleştirme: havale/nakit ile ödeyen destekçiler ya da test için.
+// Kart ödemesi Stripe webhook'u üzerinden zaten otomatik aktifleşir.
+router.post('/subscriptions/grant', (req, res) => {
+  const b = req.body || {};
+  const months = Math.max(1, Math.min(36, Number(b.months) || 1));
+  let user = null;
+  if (b.userId) user = db.prepare('SELECT * FROM users WHERE id=?').get(b.userId);
+  else if (b.identifier) { const key = String(b.identifier).trim().toLowerCase(); user = db.prepare('SELECT * FROM users WHERE username=? OR email=?').get(key, key); }
+  const identityKey = b.identityKey ? String(b.identityKey).slice(0, 120) : (user ? `user-${user.id}` : null);
+  if (!user && !identityKey) return res.status(400).json({ error: 'member_or_identity_required' });
+  const sub = subscriptions.activate({ userId: user ? user.id : null, identityKey, provider: 'admin', days: months * 31, priceUsd: subscriptions.PRICE_USD() });
+  res.json({ ok: true, subscription: sub, member: user ? (user.username || user.email) : identityKey });
+});
+router.post('/subscriptions/:id/revoke', (req, res) => {
+  const sub = subscriptions.revoke({ id: Number(req.params.id) });
+  if (!sub) return res.status(404).json({ error: 'subscription_not_found' });
+  res.json({ ok: true, subscription: sub });
+});
+
 router.get('/members', (req, res) => {
   const q = String(req.query.q || '');
   const rows = memberRows({ q });

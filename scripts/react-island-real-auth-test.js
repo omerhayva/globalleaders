@@ -49,5 +49,10 @@ async function waitForServer() { for (let i = 0; i < 60; i++) { try { const res 
     await eval(runnable);
     process.exitCode = global.__REACT_TEST_EXIT_CODE__ || 0;
   } catch (err) { console.error('TEST HATASI:', err); process.exitCode = 1; }
-  finally { child.kill('SIGTERM'); await sleep(100); if (!child.killed) child.kill('SIGKILL'); }
+  finally {
+    child.kill('SIGTERM'); await sleep(100); if (!child.killed) child.kill('SIGKILL');
+    // jsdom zamanlayıcıları olay döngüsünü açık tutuyor; test biter bitmez çık.
+    await sleep(200);
+    process.exit(global.__REACT_TEST_EXIT_CODE__ || 0);
+  }
 })();

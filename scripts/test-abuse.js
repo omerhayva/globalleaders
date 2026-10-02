@@ -141,6 +141,37 @@ async function session({ sid, fp, ua = 'TestBrowser/1.0', cookie }) {
   const L3 = await session({ sid: loginSid, fp: FP('y') }); // başka cihaz, aynı hesap
   ok('başka cihazdan girince oylar hesabı takip ediyor', L3.body?.purchased === 3, JSON.stringify(L3.body));
 
+  console.log('\n6) Supporter üyesi daha fazla bedava oy alıyor');
+  {
+    const dbS = require('../server/db');
+    const subscriptionsSvc = require('../server/services/subscriptions');
+    const authSvc = require('../server/services/auth');
+    const info = dbS.prepare(`INSERT INTO users (email,username,password_hash,display_name,provider,email_verified_at,avatar_color)
+                              VALUES (?,?,?,?,?,datetime('now'),?)`)
+      .run('sup@test.local', 'sup_user', authSvc.hashPassword('TestParola123!'), 'Sup', 'local', '#f5b524');
+    const SUP_FP = crypto.createHash('sha1').update('fp:sup').digest('hex');
+    // Destekçilik hesaba bağlıdır: cihaz kimliği bu üyeye bağlanmış olmalı.
+    const { hash: fraudHash } = require('../server/services/fraud');
+    const supKey = `dev-${fraudHash('fp:' + SUP_FP)}`;
+    dbS.prepare('INSERT INTO vote_sessions (id,session_id,day,user_id) VALUES (?,?,?,?)')
+      .run(`${supKey}:${day}`, supKey, day, info.lastInsertRowid);
+    const supSession = await session({ sid: SID('sup'), fp: SUP_FP, ua: 'Sup/1.0' });
+    ok('normal hâlde günlük hak 1', supSession.body?.freePerDay === 1, JSON.stringify(supSession.body));
+    subscriptionsSvc.activate({ userId: info.lastInsertRowid, identityKey: supKey, provider: 'test', days: 31 });
+    const supAfter = await session({ sid: SID('sup'), fp: SUP_FP, ua: 'Sup/1.0' });
+    ok('destekçi günlük hakkı 5', supAfter.body?.freePerDay === 5 && supAfter.body?.supporter?.active === true, JSON.stringify({ f: supAfter.body?.freePerDay, s: supAfter.body?.supporter }));
+    let cast = 0;
+    for (let i = 0; i < 5; i++) {
+      // Her oy farklı bir ağdan gelsin: testin alt ağ sınırı (2) karışmasın.
+      const r = await vote({ sid: SID('sup'), fp: SUP_FP, ua: 'Sup/1.0', ip: `10.9.${i + 1}.1` });
+      if (r.body && r.body.ok) cast++;
+      await sleep(GAP);
+    }
+    ok('destekçi 5 oy verebiliyor', cast === 5, `cast=${cast}`);
+    const sixth = await vote({ sid: SID('sup'), fp: SUP_FP, ua: 'Sup/1.0', ip: '10.9.9.9' });
+    ok('destekçi 6. oyda duruyor', sixth.body?.error === 'no_votes_left', JSON.stringify(sixth.body));
+  }
+
   console.log(`\nSonuç: ${pass} geçti, ${fail} başarısız`);
   if (fail) { console.log('Başarısızlar:'); failures.forEach(f => console.log('  - ' + f)); }
   try { require('fs').rmSync(tmpDb, { force: true }); } catch { }

@@ -240,6 +240,42 @@ const index = require('../server/index.js');
     delete process.env.GOOGLE_REDIRECT_URI;
   }
 
+  console.log('\n7) Trafik ölçümü (analytics + KPI)');
+  {
+    // Birkaç sayfa gezisi + arama motorundan geliş + bot isteği
+    const ua = 'RealVisitor/1.0 (TestTarayici)';
+    for (const [path, ref] of [['/', 'https://www.google.com/search?q=global+leaders'], ['/leaders', BASE + '/'], ['/trending', 'https://x.com/somebody/status/1']]) {
+      await fetch(BASE + path, { headers: { 'user-agent': ua, 'accept-language': 'tr-TR,tr;q=0.9', ...(ref ? { referer: ref } : {}) } });
+    }
+    await fetch(BASE + '/api/stats', { headers: { 'user-agent': ua } });
+    await new Promise(r => setTimeout(r, 300));
+    // Bot filtresi: Googlebot isteği ölçüme HİÇ girmemeli.
+    const analyticsSvc = require('../server/services/analytics');
+    const dbA = require('../server/db');
+    analyticsSvc.ensureSchema();
+    const countViews = () => dbA.prepare('SELECT COUNT(*) c FROM page_views').get().c;
+    const before = countViews();
+    await fetch(BASE + '/leaders', { headers: { 'user-agent': 'Googlebot/2.1 (+http://www.google.com/bot.html)' } });
+    await fetch(BASE + '/trending', { headers: { 'user-agent': 'curl/8.5.0' } });
+    await new Promise(r => setTimeout(r, 200));
+    ok('bot istekleri ölçüme girmiyor', countViews() === before, `${before} → ${countViews()}`);
+    ok('bot tanıma doğru çalışıyor', analyticsSvc.isBot({ headers: { 'user-agent': 'Googlebot/2.1' } }) === true && analyticsSvc.isBot({ headers: { 'user-agent': 'Mozilla/5.0 (iPhone)' } }) === false);
+
+    const adminLogin2 = await fetch(BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: process.env.GL_ADMIN_PASSWORD }) });
+    const adminCookie = (adminLogin2.headers.getSetCookie ? adminLogin2.headers.getSetCookie() : []).map(c => c.split(';')[0]).join('; ');
+    const an = await fetch(BASE + '/api/admin/analytics?days=30', { headers: { cookie: adminCookie } });
+    const a = await an.json().catch(() => ({}));
+    ok('analytics ucu çalışıyor', an.status === 200 && !!a.visitors, `HTTP ${an.status}`);
+    ok('ziyaretçi sayılıyor', a.visitors && a.visitors.today >= 1, JSON.stringify(a.visitors));
+    ok('sayfa görüntülemesi kaydediliyor', a.views && a.views.today >= 3, JSON.stringify(a.views));
+    ok('trafik kaynağı sınıflandırılıyor (arama/sosyal/iç)', Array.isArray(a.sources) && ['search', 'social', 'internal'].every(k => a.sources.some(x => x.source === k)), JSON.stringify(a.sources));
+    ok('ülke tahmini kaydediliyor (TR)', (a.countries || []).some(c => c.country === 'TR'), JSON.stringify(a.countries));
+    ok('huni ve gelir metrikleri var', !!a.funnel && !!a.revenue && typeof a.engagement.votesPerVisitor === 'number', JSON.stringify(a.funnel));
+    ok('viral katsayı ve tutundurma hesaplanıyor', typeof a.viral.kFactor === 'number' && typeof a.retention.day7 === 'number', JSON.stringify(a.viral));
+    const rawIpStored = require('../server/db').prepare(`SELECT COUNT(*) c FROM pragma_table_info('page_views') WHERE name LIKE '%ip%'`).get().c;
+    ok('ham IP saklanmıyor (KVKK/GDPR)', rawIpStored === 0, `ip kolonu: ${rawIpStored}`);
+  }
+
   try { fs.unlinkSync(tmpDb); } catch { }
   console.log(`\n${fail === 0 ? '✅' : '❌'} site: ${pass} geçti, ${fail} başarısız`);
   if (fail) { console.log('Başarısızlar: ' + failures.join(', ')); process.exit(1); }

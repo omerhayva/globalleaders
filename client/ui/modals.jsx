@@ -179,9 +179,10 @@ function OutOfVotesBody({ slug, reason }) {
   return <>
     <h3>{device ? "Today's free vote is used on this device 😱" : "You're out of votes 😱"}</h3>
     <p className="muted small">{device ? <>Each device gets <b>1 free vote per day</b>. Get more right now:</> : <>You get <b>1 free vote per day</b>. Get more right now:</>}</p>
+    <p className="muted small">⭐ Supporters get <b>5 free votes every day</b> and see no ads — <button className="link" onClick={() => actions.openModal('supporter')}>become a supporter</button>.</p>
     <div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}>
       <button className="pack" onClick={() => actions.openModal('share', { slug, wantBonus: true })}><b>🎁 +1 VOTE</b><span>Share a leader (max 3/day)</span><span className="price">FREE</span></button>
-      <button className="pack" onClick={() => actions.openModal('buyvotes')}><b>⚡ VOTE PACKS</b><span>10 votes or 60 votes</span><span className="price">from $1</span></button>
+      <button className="pack" onClick={() => actions.openModal('buyvotes')}><b>⚡ VOTE PACKS</b><span>10 / 60 / 250 votes</span><span className="price">from $5</span></button>
     </div>
   </>;
 }
@@ -207,7 +208,11 @@ export function BuyVotesModal() {
   useEffect(() => { if (!method) return; setIntent(null); setSubmitted(false); setError(null); api('/api/purchase/intent', { method: 'POST', body: { kind: 'votes', reference: pack, method } }).then(setIntent).catch(e => setError(e && (e.message || e.error) || 'Checkout failed')); }, [pack, method, retry]);
   if (submitted) return <PayDone intentId={intent && intent.intentId} note="Your vote pack is credited right after the transfer is verified." />;
   const isCard = !!(intent && intent.paymentMethod === 'card');
-  return <div><h3>⚡ Buy vote packs</h3><p className="muted small">Pick a pack and pay by crypto or card — votes arrive after the payment is confirmed.</p><div className="pack-grid"><button className={'pack' + (pack === 'votes-10' ? ' sel' : '')} onClick={() => setPack('votes-10')}><b>10</b><span>VOTES</span><span className="price">$1.00</span></button><button className={'pack' + (pack === 'votes-60' ? ' sel' : '')} onClick={() => setPack('votes-60')}><b>60</b><span>VOTES</span><span className="price">$5.00</span></button></div><MethodChoice availability={availability} method={method} onPick={setMethod} />{error ? <PayError message={error} onRetry={() => setRetry(r => r + 1)} /> : (!intent ? <p className="muted small center paybox">Preparing checkout…</p> : (isCard ? <CardBox intent={intent} /> : (intent.clientAction && intent.clientAction.type === 'demo_confirm' ? <DemoBox intent={intent} onSubmit={go} busy={busy} /> : <PayBox intent={intent} onSubmit={go} busy={busy} note="Votes are credited right after the transfer is verified." />)))}</div>;
+  return <div><h3>⚡ Buy vote packs</h3><p className="muted small">Pick a pack and pay by crypto or card — votes arrive after the payment is confirmed.</p><div className="pack-grid three"><button className={'pack' + (pack === 'votes-10' ? ' sel' : '')} onClick={() => setPack('votes-10')}><b>10</b><span>VOTES</span><span className="price">$5.00</span></button><button className={'pack' + (pack === 'votes-60' ? ' sel' : '')} onClick={() => setPack('votes-60')}><b>60</b><span>VOTES</span><span className="price">$20.00</span><em className="pack-note">33¢ / vote</em></button><button className={'pack' + (pack === 'votes-250' ? ' sel' : '')} onClick={() => setPack('votes-250')}><b>250</b><span>VOTES</span><span className="price">$50.00</span><em className="pack-note">20¢ / vote — best value</em></button></div>
+        <div className="supporter-teaser">
+          <div><b>⭐ Supporter membership — $4.99/month</b><p className="muted small" style={{ margin: '0.2rem 0 0' }}>5 free votes every day, no ads, supporter badge. Cancel anytime.</p></div>
+          <button className="btn btn-gold small" onClick={() => actions.openModal('supporter')}>BECOME A SUPPORTER</button>
+        </div><MethodChoice availability={availability} method={method} onPick={setMethod} />{error ? <PayError message={error} onRetry={() => setRetry(r => r + 1)} /> : (!intent ? <p className="muted small center paybox">Preparing checkout…</p> : (isCard ? <CardBox intent={intent} /> : (intent.clientAction && intent.clientAction.type === 'demo_confirm' ? <DemoBox intent={intent} onSubmit={go} busy={busy} /> : <PayBox intent={intent} onSubmit={go} busy={busy} note="Votes are credited right after the transfer is verified." />)))}</div>;
 }
 
 export function ShareModal({ slug, wantBonus = false, afterVote = false }) {
@@ -262,6 +267,49 @@ export function CheckoutModal({ kind, reference }) {
     ? <><div className="field"><label>YOUR NAME OR COMPANY *</label><input id="adName" maxLength="60" placeholder="Acme Inc." /></div><div className="field"><label>𝕏 HANDLE</label><input id="adX" maxLength="16" placeholder="@acme" /></div><div className="field"><label>SHORT TEXT</label><input id="adText" maxLength="120" placeholder="The best rockets in the galaxy 🚀" /></div><div className="field"><label>BUTTON TEXT</label><input id="adCta" maxLength="30" placeholder="Learn more" /></div><div className="field"><label>LINK (OPTIONAL)</label><input id="adUrl" type="url" placeholder="https://example.com" /></div><div className="field"><label>IMAGE (OPTIONAL, JPG/PNG/WEBP, max 2MB)</label><input id="adImg" type="file" accept="image/png,image/jpeg,image/webp" /></div></>
     : <><div className="field"><label>YOUR NAME OR COMPANY *</label><input id="anName" maxLength="60" placeholder="John Doe" /></div><div className="field"><label>𝕏 HANDLE (OPTIONAL)</label><input id="anX" maxLength="16" placeholder="@johndoe" /></div></>;
   return <div ref={rootRef}><h3>{kind === 'ad' ? '📢 Take over this ad space' : '🎵 Take over this anthem'}</h3>{summary}{fields}<MethodChoice availability={availability} method={method} onPick={setMethod} />{error ? <PayError message={error} onRetry={() => setRetry(r => r + 1)} /> : (!intent ? <p className="muted small center paybox">Preparing checkout…</p> : (isCard ? <CardBox intent={intent} beforeRedirect={beforeCard} /> : (intent.clientAction && intent.clientAction.type === 'demo_confirm' ? <DemoBox intent={intent} onSubmit={go} busy={busy} /> : <PayBox intent={intent} onSubmit={go} busy={busy} note="Your slot activates after the transfer is verified." />)))}</div>;
+}
+
+// Supporter aboneliği: kart ile aylık destekçi üyeliği.
+// Stripe abonelik modu kullanılır; giriş yapılmış bir hesap gerekir.
+export function SupporterModal() {
+  const st = useStore();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => { api('/api/subscription').then(setStatus).catch(() => setStatus({ active: false })); }, []);
+  const active = !!(status && status.active);
+  const start = async () => {
+    if (!st.me) { actions.closeModal(); return actions.openModal('signin', { afterMsg: 'Sign in to start your supporter membership — it follows your account.' }); }
+    setBusy(true); setError(null);
+    try {
+      const intent = await api('/api/subscription/intent', { method: 'POST', body: { method: 'card' } });
+      if (intent.clientAction && intent.clientAction.type === 'redirect') { location.href = intent.clientAction.url; return; }
+      if (intent.clientAction && intent.clientAction.type === 'demo_confirm') {
+        const r = await api('/api/subscription/confirm', { method: 'POST', body: { intentId: intent.intentId } });
+        actions.closeModal();
+        actions.toast('⭐ <b>Welcome, supporter!</b> Your free votes just went up.', 'epic', 6500);
+        api('/api/session').then(actions.setSession).catch(() => { });
+        return r;
+      }
+      setError('Membership checkout could not be started.');
+    } catch (e) { setError(e && (e.message || e.error) || 'Membership checkout failed'); }
+    finally { setBusy(false); }
+  };
+  if (active) return <div><h3>⭐ Supporter membership</h3>
+    <p className="muted small">Thank you! Your membership is active{status.currentPeriodEnd ? ` until ${String(status.currentPeriodEnd).slice(0, 10)}` : ''}.</p>
+    <div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}>
+      <div className="pack sel"><b>+{status.bonusFreeVotes || 4}</b><span>EXTRA FREE VOTES / DAY</span></div>
+      {status.adFree ? <div className="pack"><b>🚫</b><span>ADS HIDDEN</span></div> : null}
+      <div className="pack"><b>★</b><span>SUPPORTER BADGE</span></div>
+    </div>
+    <p className="muted small center" style={{ marginTop: '0.6rem' }}>Renews monthly until cancelled. To cancel, reply to your Stripe receipt or contact us.</p>
+  </div>;
+  return <div><h3>⭐ Become a supporter</h3>
+    <p className="muted small">Membership is linked to your account and renews monthly.</p>
+    <div className="pack-grid"><div className="pack sel"><b>${(status && status.priceUsd ? status.priceUsd : 4.99).toFixed(2)}</b><span>PER MONTH</span></div><div className="pack"><b>+{status && status.bonusFreeVotes ? status.bonusFreeVotes : 4}</b><span>FREE VOTES / DAY</span></div><div className="pack"><b>🚫</b><span>NO ADS</span></div></div>
+    {error ? <PayError message={error} onRetry={start} /> : <button className="btn btn-gold big" style={{ width: '100%', marginTop: '0.6rem' }} disabled={busy} onClick={start}>{busy ? 'STARTING…' : (st.me ? 'CONTINUE TO CARD PAYMENT' : 'SIGN IN AND CONTINUE')}</button>}
+    <p className="muted small center" style={{ marginTop: '0.5rem' }}>Card only — recurring payments cannot run on crypto.</p>
+  </div>;
 }
 
 export function MyVotesModal() { const st = useStore(); const total = (st.session.freePerDay || 0) + (st.session.bonus_earned || 0) + (st.session.purchased || 0); const mv = st.myVotes || []; return <div><h3>🗳 My votes</h3><p className="muted small">Remaining today: <b>{st.session.remaining ?? '…'}/{total}</b> · Free {st.session.freePerDay}/day · Bonus earned {st.session.bonus_earned || 0} · Purchased {st.session.purchased || 0}</p><div className="myvotes-list">{mv.length ? mv.map(v => <a className="trend-row" key={v.slug} href={`/leader/${encodeURIComponent(v.slug)}`}><span>{v.flag} {v.name}</span><b>×{v.n} · #{v.rank}</b></a>) : <p className="muted small">You haven't voted yet. Your 1 free daily vote is waiting!</p>}</div><div className="hero-cta"><button className="btn btn-gold" onClick={() => actions.openModal('buyvotes')}>⚡ BUY MORE VOTES</button></div></div>; }
@@ -364,7 +412,8 @@ export function AccountModal() {
   const st = useStore(); const me = st.me;
   if (!me) return null;
   const out = async () => { try { await api('/api/auth/logout', { method: 'POST' }); } catch { } actions.setMe(null); actions.closeModal(); actions.toast('Signed out. Your votes stay linked to your account.', '', 4000); };
-  return <div><h3><span className="avatar big" style={{ background: me.color }}>{me.initials}</span> {me.name}</h3><p className="muted small">@{me.username} · {me.email}{me.email_verified ? ' · ✓ Email verified' : ' · ⚠ Email not verified'}</p>{!me.email_verified ? <p className="muted small">Verify your email to keep the account fully secured and recoverable.</p> : null}<div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}><button className="pack" onClick={() => actions.openModal('myvotes')}><b>🗳 MY VOTES</b><span>Every leader you've supported</span></button><button className="pack" onClick={out}><b>🚪 SIGN OUT</b><span>Your votes remain linked to this account</span></button></div></div>;
+  const supporter = (st.session && st.session.supporter) || null;
+  return <div><h3><span className="avatar big" style={{ background: me.color }}>{me.initials}</span> {me.name}{st.session && st.session.supporter && st.session.supporter.active ? <span className="supporter-badge" title="Supporter">★</span> : null}</h3><p className="muted small">@{me.username} · {me.email}{me.email_verified ? ' · ✓ Email verified' : ' · ⚠ Email not verified'}</p>{!me.email_verified ? <p className="muted small">Verify your email to keep the account fully secured and recoverable.</p> : null}<div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}><button className="pack" onClick={() => actions.openModal('myvotes')}><b>🗳 MY VOTES</b><span>Every leader you've supported</span></button>{supporter && supporter.active ? <div className="pack sel"><b>★ SUPPORTER</b><span>+{supporter.bonusFreeVotes} free votes/day{supporter.currentPeriodEnd ? ` · renews ${String(supporter.currentPeriodEnd).slice(0, 10)}` : ''}</span></div> : <button className="pack" onClick={() => actions.openModal('supporter')}><b>⭐ BECOME A SUPPORTER</b><span>5 votes a day, no ads — $4.99/month</span></button>}<button className="pack" onClick={out}><b>🚪 SIGN OUT</b><span>Your votes remain linked to this account</span></button></div></div>;
 }
 
-const MODALS = { vote: VoteModal, buyvotes: BuyVotesModal, share: ShareModal, checkout: CheckoutModal, myvotes: MyVotesModal, signin: SignInModal, account: AccountModal, paymentStatus: PaymentStatusModal };
+const MODALS = { vote: VoteModal, buyvotes: BuyVotesModal, supporter: SupporterModal, share: ShareModal, checkout: CheckoutModal, myvotes: MyVotesModal, signin: SignInModal, account: AccountModal, paymentStatus: PaymentStatusModal };

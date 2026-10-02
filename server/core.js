@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('./db');
 const sse = require('./services/sse');
 const fraud = require('./services/fraud');
+const subscriptions = require('./services/subscriptions');
 const { recomputeRanks, dayStr } = require('./seed');
 const { fold } = require('./services/text-fold');
 
@@ -30,8 +31,13 @@ function getOrCreateVoteSession(sessionId, ip, ua) {
   }
   return vs;
 }
+// Günlük bedava oy kotası: normal ziyaretçi 1, Supporter üye daha fazla.
+function freeVotesPerDay(sessionId) {
+  const base = parseInt(getSetting('free_votes_per_day') || '1', 10);
+  try { return base + subscriptions.bonusFreeVotes(sessionId); } catch { return base; }
+}
 function remainingVotes(vs) {
-  const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
+  const free = freeVotesPerDay(vs && vs.session_id);
   return Math.max(0, free - vs.free_used)
     + Math.max(0, vs.bonus_earned - vs.bonus_used)
     + Math.max(0, (vs.purchased || 0) - (vs.purchased_used || 0));
@@ -62,7 +68,7 @@ function castVotes({ sessionId, ip, ua, leaderSlug, count, source = 'web', devic
     if (remaining <= 0) return { error: 'no_votes_left', remaining: 0 };
     const requested = Math.min(count, remaining);
 
-    const free = parseInt(getSetting('free_votes_per_day') || '1', 10);
+    const free = freeVotesPerDay(sessionId); // Supporter üyelerde daha yüksek
     const bonusCap = parseInt(getSetting('max_bonus_per_day') || '3', 10);
     const deviceFreeUsed = db.prepare(
       `SELECT COUNT(*) c FROM votes WHERE device_hash=? AND type='free' AND created_at >= ?`
@@ -321,5 +327,4 @@ module.exports = {
   getSetting, setSetting, FLAG, getOrCreateVoteSession, remainingVotes, castVotes,
   registerShare, leaderboard, leaderProfile, countryInfo, globalStats, trending,
   countriesMapData, pushActivity, recentActivity, decorate, logRankHistoryToday,
-  myVotes, featuredAnthem
-};
+  myVotes, featuredAnthem, freeVotesPerDay };

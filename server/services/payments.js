@@ -46,13 +46,13 @@ class ColdWalletProvider {
   // Yanlış yazılmış bir cüzdan adresine müşteri para göndermesin diye adres
   // biçimi kontrol edilir (TRC20 = T ile başlayan 34 karakterlik base58 adres).
   get addressValid() { return CRYPTO_NETWORK !== 'TRC20' ? !!COLD_WALLET_ADDRESS : isValidTronAddress(COLD_WALLET_ADDRESS); }
-  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, meta, advertiser }) {
+  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, userId = null, meta, advertiser }) {
     if (!COLD_WALLET_ADDRESS) throw new Error('crypto_wallet_not_configured');
     if (!this.addressValid) throw new Error('crypto_wallet_address_invalid');
     const cryptoAmount = cryptoAmountForUsd(amountUsd); const intentId = 'crypto_' + crypto.randomBytes(12).toString('hex');
     const storedMeta = safeMeta(meta, { advertiser });
-    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,meta)
-                VALUES ('cold_wallet',?,?,?,?,?,'pending',0,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, JSON.stringify(storedMeta));
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,user_id,meta)
+                VALUES ('cold_wallet',?,?,?,?,?,'pending',0,?,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, userId || null, JSON.stringify(storedMeta));
     return {
       intentId, paymentMethod: 'cold_wallet', amountUsd, cryptoAmount,
       cryptoAmountDisplay: `${cryptoAmount} ${CRYPTO_ASSET}`,
@@ -103,16 +103,18 @@ class StripeProvider {
   get name() { return 'stripe'; }
   get method() { return 'card'; }
   get configured() { return !!STRIPE_SECRET_KEY(); }
-  async createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, meta, advertiser, baseUrl, description }) {
+  async createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, userId = null, meta, advertiser, baseUrl, description }) {
     if (!this.configured) throw new Error('card_provider_not_configured');
     const intentId = 'card_' + crypto.randomBytes(12).toString('hex');
     const storedMeta = safeMeta(meta, { advertiser });
-    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,meta)
-                VALUES ('stripe',?,?,?,?,?,'pending',0,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, JSON.stringify(storedMeta));
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,user_id,meta)
+                VALUES ('stripe',?,?,?,?,?,'pending',0,?,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, userId || null, JSON.stringify(storedMeta));
 
     const root = String(baseUrl || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
     const params = new URLSearchParams();
-    params.set('mode', 'payment');
+    // Supporter aboneliği: Stripe'ın abonelik modu (kart tekrarlayan ödemeyi destekler).
+    const isSubscription = kind === 'supporter';
+    params.set('mode', isSubscription ? 'subscription' : 'payment');
     params.set('success_url', `${root}/?payment=success&intent=${intentId}`);
     params.set('cancel_url', `${root}/?payment=cancelled&intent=${intentId}`);
     params.set('client_reference_id', intentId);
@@ -122,6 +124,11 @@ class StripeProvider {
     params.set('line_items[0][price_data][currency]', String(currency || 'USD').toLowerCase());
     params.set('line_items[0][price_data][unit_amount]', String(Math.round(Number(amountUsd) * 100)));
     params.set('line_items[0][price_data][product_data][name]', String(description || 'Global Leaders Live purchase').slice(0, 120));
+    if (isSubscription) {
+      params.set('line_items[0][price_data][recurring][interval]', 'month');
+      params.set('subscription_data[metadata][intentId]', intentId);
+      params.set('subscription_data[metadata][kind]', 'supporter');
+    }
 
     const r = await fetch(`${STRIPE_API_BASE()}/v1/checkout/sessions`, {
       method: 'POST',
@@ -147,6 +154,21 @@ class StripeProvider {
     let event = null; try { event = JSON.parse(raw); } catch { return { handled: false, error: 'invalid_payload' }; }
     const type = event && event.type;
     const session = (event && event.data && event.data.object) || {};
+
+    // Abonelik yaşam döngüsü olayları (ödeme kaydı olmadan gelir).
+    if (/^customer\.subscription\./.test(String(type))) {
+      const st = String(session.status || '');
+      const status = type === 'customer.subscription.deleted' ? 'canceled' : (st === 'active' || st === 'trialing') ? 'active' : st === 'past_due' ? 'past_due' : 'canceled';
+      return { handled: true, subscriptionEvent: { stripeSubscriptionId: session.id || null, status, periodEnd: session.current_period_end ? new Date(session.current_period_end * 1000).toISOString() : null }, event: type };
+    }
+    if (type === 'invoice.paid' || type === 'invoice.payment_failed') {
+      const inv = session;
+      const subId = inv.subscription || (inv.parent && inv.parent.subscription_details && inv.parent.subscription_details.subscription) || null;
+      const line = inv.lines && inv.lines.data && inv.lines.data[0];
+      const periodEnd = line && line.period && line.period.end ? new Date(line.period.end * 1000).toISOString() : null;
+      return { handled: true, subscriptionEvent: { stripeSubscriptionId: subId, status: type === 'invoice.paid' ? 'active' : 'past_due', periodEnd }, event: type };
+    }
+
     const intentId = session.client_reference_id || (session.metadata && session.metadata.intentId);
     if (!intentId) return { handled: false, error: 'unknown_intent', event: type };
     const payment = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(intentId);
@@ -156,7 +178,7 @@ class StripeProvider {
       if (payment.status === 'pending') {
         db.prepare("UPDATE payments SET status='paid', tx_hash=? WHERE id=? AND status='pending'").run(String(session.payment_intent || session.id || '').slice(0, 180), payment.id);
       }
-      return { handled: true, paymentId: payment.id, event: type, paid: true };
+      return { handled: true, paymentId: payment.id, event: type, paid: true, subscription: session.subscription ? { id: String(session.subscription), customer: session.customer ? String(session.customer) : null } : null };
     }
     if (type === 'checkout.session.expired' || type === 'payment_intent.payment_failed') {
       db.prepare("UPDATE payments SET status='failed' WHERE id=? AND status='pending'").run(payment.id);
@@ -170,10 +192,10 @@ class MockPaymentProvider {
   get name() { return 'mock'; }
   get method() { return 'demo'; }
   get configured() { return true; }
-  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, meta }) {
+  createIntent({ kind, reference, amountUsd, currency = 'USD', sessionId, identityKey, userId = null, meta }) {
     const intentId = 'mock_' + crypto.randomBytes(10).toString('hex');
-    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,meta)
-                VALUES ('mock',?,?,?,?,?,'pending',1,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, JSON.stringify(meta || {}));
+    db.prepare(`INSERT INTO payments (provider,intent_id,kind,reference,amount_usd,currency,status,demo,session_id,identity_key,user_id,meta)
+                VALUES ('mock',?,?,?,?,?,'pending',1,?,?,?,?)`).run(intentId, kind, reference, amountUsd, currency, sessionId || null, identityKey || null, userId || null, JSON.stringify(meta || {}));
     return { intentId, clientAction: { type: 'demo_confirm', message: 'Demo payment only — no real charge will occur.' } };
   }
   confirm(intentId) {

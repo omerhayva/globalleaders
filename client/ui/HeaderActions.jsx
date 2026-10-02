@@ -87,6 +87,9 @@ export function HeaderActions() {
   const header = headerHost && createPortal(
     <>
       <SearchBox />
+      {st.session && st.session.supporter && st.session.supporter.active && !st.me
+        ? <button className="supporter-pill" onClick={() => actions.openModal('supporter')} title="Supporter membership active">★ SUPPORTER</button>
+        : null}
       <span className={'votes-pill' + (st.session.remaining === 0 ? ' empty' : '')} id="votesPill"
         role="status" style={{ cursor: 'pointer' }} title="See my votes"
         onClick={() => actions.openModal('myvotes')}>{pillTxt}</span>

@@ -8,6 +8,7 @@ const fraud = require('./services/fraud');
 const payments = require('./services/payments');
 const paymentVerification = require('./services/payment-verification');
 const identity = require('./services/identity');
+const subscriptions = require('./services/subscriptions');
 const currency = require('./services/currency');
 
 const router = express.Router();
@@ -50,8 +51,9 @@ router.get('/session', (req, res) => {
   res.json({
     remaining: core.remainingVotes(vs), free_used: vs.free_used, bonus_earned: vs.bonus_earned, bonus_used: vs.bonus_used,
     purchased: vs.purchased || 0, purchased_used: vs.purchased_used || 0,
-    freePerDay: parseInt(core.getSetting('free_votes_per_day') || '1', 10), demoMode: core.getSetting('demo_mode') === '1',
-    signedIn: !!id.user, identitySource: id.device.source
+    freePerDay: core.freeVotesPerDay(id.voteKey), demoMode: core.getSetting('demo_mode') === '1',
+    signedIn: !!id.user, identitySource: id.device.source,
+    supporter: subscriptions.status(id.voteKey) // abonelik varsa kota yükselir, reklamlar gizlenir
   });
 });
 router.get('/my-votes', (req, res) => { const id = identityFor(req); const user = id.user; if (!user) return res.json(core.myVotes(id.voteKey)); const sids = db.prepare('SELECT DISTINCT session_id FROM vote_sessions WHERE user_id=?').all(user.id).map(r => r.session_id); if (!sids.includes(id.voteKey)) sids.push(id.voteKey); const merged = new Map(); for (const sid of sids) for (const v of core.myVotes(sid)) { const m = merged.get(v.slug); if (m) { m.n += v.n; if (v.last > m.last) m.last = v.last; } else merged.set(v.slug, { ...v }); } res.json([...merged.values()].sort((a, b) => String(b.last).localeCompare(String(a.last))).slice(0, 50)); });
@@ -94,9 +96,64 @@ router.post('/vote', rateLimit({ windowMs: 60_000, max: 30, name: 'vote-endpoint
 router.post('/share', rateLimit({ windowMs: 60_000, max: 10, name: 'share-endpoint' }), (req, res) => { const { slug, platform } = req.body || {}; const id = identity.resolveIdentity(req); const result = core.registerShare({ sessionId: id.voteKey, ip: id.ip, leaderSlug: String(slug || ''), platform }); if (result.error) return res.status(400).json(result); res.json(result); });
 router.post('/referral', rateLimit({ windowMs: 60 * 60_000, max: 20, name: 'referral-endpoint' }), (req, res) => { const { shareId, slug } = req.body || {}; if (!shareId) return res.json({ ok: false }); const chk = fraud.checkReferral({ shareId: String(shareId).slice(0, 24), visitorIp: ip(req), ownerSession: identity.resolveIdentity(req).voteKey }); if (!chk.ok) return res.json({ ok: false, reason: chk.reason }); const leader = db.prepare('SELECT id FROM leaders WHERE slug=?').get(String(slug || '')); db.prepare('INSERT INTO referrals (share_id,visitor_session,visitor_ip_hash,leader_id) VALUES (?,?,?,?)').run(String(shareId).slice(0, 24), req.sessionId, chk.ipHash, leader ? leader.id : null); db.prepare('UPDATE shares SET clicks=clicks+1 WHERE id=?').run(String(shareId).slice(0, 24)); res.json({ ok: true }); });
 
-const VOTE_PACKS = { 'votes-10': { votes: 10, usd: 1.0 }, 'votes-60': { votes: 60, usd: 5.0 } };
+// Oy paketleri: küçük paket işlem maliyetini karşılamıyor, bu yüzden kademeler
+// büyütüldü (oy başına birim fiyat tutar yükseldikçe düşer).
+const VOTE_PACKS = {
+  'votes-10': { votes: 10, usd: 5.0 },    // $0.50 / oy
+  'votes-60': { votes: 60, usd: 20.0 },   // $0.33 / oy
+  'votes-250': { votes: 250, usd: 50.0 }  // $0.20 / oy
+};
 const mockPaymentsLive = () => core.getSetting('demo_mode') !== '1' && payments.active === 'mock';
 router.get('/payment-methods', (req, res) => res.json(payments.availability()));
+// ---- SUPPORTER ABONELİĞİ ----
+// Giriş yapmış üyeler için aylık destekçi üyeliği: günlük oy hakkı artar,
+// reklamlar gizlenir. Kart (Stripe abonelik modu) ile satın alınır; Stripe
+// yapılandırılmadıysa admin panelinden elle aktifleştirilebilir.
+router.get('/subscription', (req, res) => {
+  const id = identity.resolveIdentity(req);
+  res.json({ ...subscriptions.status(id.voteKey), priceUsd: subscriptions.PRICE_USD(), bonusFreeVotes: subscriptions.BONUS_FREE_VOTES(), adFree: subscriptions.AD_FREE(), signedIn: !!id.user, plan: subscriptions.PLAN });
+});
+
+router.post('/subscription/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'sub-intent' }), async (req, res) => {
+  const id = identityFor(req);
+  if (!id.user) return res.status(401).json({ error: 'sign_in_required', message: 'Supporter membership is linked to your account — please sign in first.' });
+  if (subscriptions.isSupporter(id.voteKey)) return res.status(409).json({ error: 'already_supporter' });
+  const method = String((req.body || {}).method || 'card').toLowerCase();
+  if (method !== 'card') return res.status(400).json({ error: 'card_required', message: 'Recurring memberships are card-only.' });
+  const availability = payments.availability();
+  if (!availability.card.enabled) return res.status(503).json({ error: 'card_payments_not_configured', message: 'Card payments are not configured on this server yet.' });
+  const amountUsd = subscriptions.PRICE_USD();
+  try {
+    const intent = await payments.createIntent({
+      method: 'card', kind: 'supporter', reference: subscriptions.PLAN, amountUsd,
+      sessionId: id.cookieSession, identityKey: id.voteKey, userId: id.user.id,
+      baseUrl: process.env.PUBLIC_BASE_URL, description: 'Global Leaders Live — Supporter (monthly)'
+    });
+    res.json(intent);
+  } catch (e) {
+    res.status(503).json({ error: 'subscription_unavailable', message: e && e.message });
+  }
+});
+
+// Demo/mock sağlayıcıda (Stripe yokken test için) aboneliği tamamlar.
+router.post('/subscription/confirm', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'sub-confirm' }), (req, res) => {
+  const id = identityFor(req);
+  if (!id.user) return res.status(401).json({ error: 'sign_in_required' });
+  const { intentId } = req.body || {};
+  const pending = db.prepare('SELECT * FROM payments WHERE intent_id=?').get(String(intentId || ''));
+  if (!pending) return res.status(404).json({ error: 'unknown_intent' });
+  if (!ownsPayment(id, pending)) return res.status(403).json({ error: 'wrong_session' });
+  if (pending.provider === 'stripe') return res.status(400).json({ error: 'card_payments_are_confirmed_by_webhook' });
+  const conf = payments.confirm(String(intentId));
+  if (conf.status === 'succeeded') {
+    const { fulfillPayment } = require('./services/payment-fulfillment');
+    const result = fulfillPayment(conf.payment.id, 'mock_subscription');
+    if (result && result.ok) sse.broadcast('supporter_activated', { userId: id.user.id });
+    return res.json({ ok: !!(result && result.ok), subscription: subscriptions.status(id.voteKey), detail: result });
+  }
+  res.status(409).json({ error: 'payment_not_pending', status: conf.status });
+});
+
 router.post('/purchase/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'purchase-intent' }), async (req, res) => {
   if (mockPaymentsLive()) return res.status(503).json({ error: 'payment_provider_not_configured', message: 'Real payments are not configured yet.' });
   const { kind, reference, advertiser, method } = req.body || {}; if (!['ad', 'anthem', 'votes'].includes(kind)) return res.status(400).json({ error: 'bad_kind' });
@@ -218,7 +275,21 @@ router.post('/webhooks/:provider', express.raw({ type: '*/*' }), async (req, res
     if (!evt) return res.status(404).json({ received: false, error: 'unknown_provider' });
     if (evt.error === 'invalid_signature') return res.status(400).json({ received: false, error: evt.error });
     // Kart ödemesi tahsil edildi → satın alma hemen aktifleşir.
+    // Abonelik yaşam döngüsü: yenileme, iptal, gecikme.
+    if (evt.subscriptionEvent && evt.subscriptionEvent.stripeSubscriptionId) {
+      const sub = subscriptions.setStatus(evt.subscriptionEvent);
+      return res.json({ received: true, handled: true, subscription: sub ? { id: sub.id, status: sub.status, current_period_end: sub.current_period_end } : null });
+    }
     if (evt.paid && evt.paymentId) {
+      // Abonelik modunda gelen ödemede Stripe abonelik kimliğini kaydet:
+      // yenileme/iptal olayları bu kimlikle eşleşir.
+      if (evt.subscription) {
+        const row = db.prepare('SELECT meta FROM payments WHERE id=?').get(evt.paymentId) || {};
+        let meta = {}; try { meta = row.meta ? JSON.parse(row.meta) : {}; } catch { }
+        meta.stripeSubscriptionId = evt.subscription.id;
+        meta.stripeCustomerId = evt.subscription.customer;
+        db.prepare('UPDATE payments SET meta=? WHERE id=?').run(JSON.stringify(meta), evt.paymentId);
+      }
       const { fulfillPayment } = require('./services/payment-fulfillment');
       const result = fulfillPayment(evt.paymentId, 'stripe_webhook');
       const idempotent = !!(result && result.idempotent);

@@ -44,10 +44,10 @@ function tronResponse(url) {
   const m = url.match(/\/transactions\/([A-Za-z0-9]+)/);
   const hash = m ? m[1] : '';
   if (url.includes('/events')) {
-    // TX_OK: 1 USDT (votes-10 = $1) · TX_WRONG_TO: başka cüzdana 1 USDT
-    // TX_LOW: anthem ($5) için yalnızca 1 USDT
+    // Fiyatlar: votes-10 = $5, anthem = $5. TX_OK tam tutarı taşır,
+    // TX_LOW anthem için eksik tutar (1 USDT) gönderir.
     const to = hash === TX_WRONG_TO ? OTHER_WALLET : TRON_WALLET;
-    const value = hash === TX_LOW ? '1000000' : '1000000';
+    const value = hash === TX_LOW ? '1000000' : '5000000';
     return { status: 200, ok: true, json: async () => ({ data: [{ event_name: 'Transfer', contract_address: USDT_CONTRACT, result: { from: 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE', to, value } }] }) };
   }
   if ([TX_OK, TX_WRONG_TO, TX_LOW].includes(hash)) return { status: 200, ok: true, json: async () => ({ data: [{ blockNumber: 61234567, ret: [{ contractRet: 'SUCCESS' }] }] }) };
@@ -64,7 +64,7 @@ globalThis.fetch = async (url, opts) => {
     if (!opts || !opts.headers || !String(opts.headers.authorization || '').startsWith('Bearer sk_test')) {
       return { status: 401, ok: false, json: async () => ({ error: { message: 'bad api key' } }) };
     }
-    if (body.includes('mode=payment')) {
+    if (body.includes('mode=payment') || body.includes('mode=subscription')) {
       return { status: 200, ok: true, json: async () => ({ id: 'cs_test_123', url: 'https://checkout.stripe.test/pay/cs_test_123' }) };
     }
     return { status: 400, ok: false, json: async () => ({ error: { message: 'unexpected call' } }) };
@@ -116,7 +116,7 @@ const j = async (method, url, body, headers = {}) => {
   const intent = await j('POST', '/api/purchase/intent', { kind: 'votes', reference: 'votes-10', method: 'crypto' }, { 'x-gl-session': SESSION });
   ok('intent oluştu (crypto)', intent.status === 200 && intent.json.intentId && intent.json.paymentMethod === 'cold_wallet');
   ok('cüzdan bilgisi döndü', intent.json.wallet && intent.json.wallet.address === TRON_WALLET && intent.json.wallet.network === 'TRC20');
-  ok('tutar görüntüsü', intent.json.cryptoAmountDisplay === '1.00 USDT', intent.json.cryptoAmountDisplay);
+  ok('tutar görüntüsü', intent.json.cryptoAmountDisplay === '5.00 USDT', intent.json.cryptoAmountDisplay);
   const intentId = intent.json.intentId;
 
   const badHash = await j('POST', '/api/purchase/confirm', { intentId, details: { txHash: 'x' } }, { 'x-gl-session': SESSION });
@@ -140,7 +140,7 @@ const j = async (method, url, body, headers = {}) => {
   const chain = await j('POST', `/api/admin/payments/${row.id}/check-chain`, {}, AH);
   ok('zincir kontrolü başarılı', chain.status === 200 && chain.json.ok === true, JSON.stringify(chain.json).slice(0, 200));
   ok('zincir doğrulaması satın almayı aktifleştirdi', chain.json.activated === true);
-  ok('doğrulanan tutar', chain.json.onchain && chain.json.onchain.amountUsd === 1, JSON.stringify(chain.json.onchain));
+  ok('doğrulanan tutar', chain.json.onchain && chain.json.onchain.amountUsd === 5, JSON.stringify(chain.json.onchain));
 
   const vs = await j('GET', '/api/session', undefined, { 'x-gl-session': SESSION });
   voteSession = vs.json;
@@ -160,7 +160,7 @@ const j = async (method, url, body, headers = {}) => {
   ok('yanlış cüzdan reddedildi', chainWrong.json.ok === false && ['wrong_recipient', 'transfer_not_found'].includes(chainWrong.json.reason), JSON.stringify(chainWrong.json).slice(0, 160));
   const manualNoReason = await j('POST', `/api/admin/payments/${r2.id}/verify`, {}, AH);
   ok('gerekçesiz elle onay reddedildi (422)', manualNoReason.status === 422 && manualNoReason.json.error === 'reason_required', `status=${manualNoReason.status}`);
-  const manualOk = await j('POST', `/api/admin/payments/${r2.id}/verify`, { amount: 1, note: 'cüzdanda gördüm, TX kontrol edildi' }, AH);
+  const manualOk = await j('POST', `/api/admin/payments/${r2.id}/verify`, { amount: 5, note: 'cüzdanda gördüm, TX kontrol edildi' }, AH);
   ok('gerekçeli elle onay çalışıyor ve zincir kaydı işleniyor', manualOk.status === 200 && manualOk.json.ok === true, JSON.stringify(manualOk.json).slice(0, 120));
 
   const i3 = await j('POST', '/api/purchase/intent', { kind: 'anthem', reference: 'TR', method: 'crypto' }, { 'x-gl-session': SESSION });
@@ -207,6 +207,8 @@ const j = async (method, url, body, headers = {}) => {
   const hookAgain = await j('POST', '/api/webhooks/stripe', paidEvent, { 'stripe-signature': `t=${t},v1=${sig}` });
   ok('webhook tekrarı çift kupon yazmıyor', hookAgain.json.idempotent === true && hookAgain.json.activated === false, JSON.stringify(hookAgain.json));
   const vsAfter = await j('GET', '/api/session', undefined, { 'x-gl-session': SESSION });
+  // Zincirle doğrulanan 10 + elle onaylanan 10 + kartla alınan 60 = 80
+  // (blok bekleyen votes-60 reddedildiği için sayılmaz)
   ok('kupon bakiyesi tam bir kez yazıldı (80)', (vsAfter.json.purchased || 0) === 80, `purchased=${vsAfter.json.purchased}`);
 
   const statusCard = await j('GET', `/api/purchase/status?intent=${cardId}`, undefined, { 'x-gl-session': SESSION });
@@ -257,6 +259,90 @@ const j = async (method, url, body, headers = {}) => {
   ok('başka oturum ödeme durumunu göremiyor', otherSession.status === 403, `status=${otherSession.status}`);
   const dashboard = await j('GET', '/api/admin/dashboard', undefined, AH);
   ok('dashboard ciro yalnızca başarılı ödemeleri sayıyor', dashboard.status === 200 && dashboard.json.revenue && dashboard.json.revenue.today >= 6, JSON.stringify(dashboard.json.revenue));
+
+  console.log('\n7) Supporter aboneliği (aylık destekçi üyeliği)');
+  {
+    // Giriş yapmış bir üye oluştur (ödeme testi auth router'ı bağlamıyor).
+    const authSvc = require('../server/services/auth');
+    const subscriptionsSvc = require('../server/services/subscriptions');
+    const u = db.prepare(`INSERT INTO users (email,username,password_hash,display_name,provider,email_verified_at,avatar_color)
+                          VALUES (?,?,?,?,?,datetime('now'),?)`)
+      .run('supporter@example.com', 'supporter_user', authSvc.hashPassword('TestParola123!'), 'Supporter', 'local', '#f5b524');
+    const SUP_SESSION = 'f'.repeat(32);
+    const day = new Date().toISOString().slice(0, 10);
+    db.prepare(`INSERT INTO vote_sessions (id,session_id,day,user_id) VALUES (?,?,?,?)`).run(`${SUP_SESSION}:${day}`, SUP_SESSION, day, u.lastInsertRowid);
+    const SH = { 'x-gl-session': SUP_SESSION };
+
+    const before = await j('GET', '/api/subscription', undefined, SH);
+    ok('giriş öncesi/sonrası durum ucu çalışıyor', before.status === 200 && before.json.active === false, JSON.stringify(before.json));
+
+    const freeBefore = await j('GET', '/api/session', undefined, SH);
+    ok('normal üyenin günlük hakkı 1', freeBefore.json.freePerDay === 1 && freeBefore.json.supporter.active === false, JSON.stringify({ f: freeBefore.json.freePerDay, s: freeBefore.json.supporter }));
+
+    const sIntent = await j('POST', '/api/subscription/intent', { method: 'card' }, SH);
+    ok('abonelik niyeti oluştu (kart)', sIntent.status === 200 && sIntent.json.paymentMethod === 'card' && !!sIntent.json.intentId, JSON.stringify(sIntent.json).slice(0, 160));
+    ok('abonelik Stripe yönlendirmesine sahip', sIntent.json.clientAction && sIntent.json.clientAction.type === 'redirect', JSON.stringify(sIntent.json.clientAction || {}));
+    const subIntentId = sIntent.json.intentId;
+
+    // Yanlış kişi ödemeyi göremez
+    const stranger = await j('GET', `/api/purchase/status?intent=${subIntentId}`, undefined, { 'x-gl-session': 'b'.repeat(32) });
+    ok('abonelik ödemesi başkasına kapalı', stranger.status === 403, `status=${stranger.status}`);
+
+    // Stripe abonelik ödemesi onaylandı → imzalı webhook
+    const subEvent = JSON.stringify({ type: 'checkout.session.completed', data: { object: { id: 'cs_sub_1', client_reference_id: subIntentId, subscription: 'sub_test_777', customer: 'cus_test_777', payment_intent: 'pi_sub_777' } } });
+    const t7 = Math.floor(Date.now() / 1000);
+    const sig7 = crypto.createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET).update(`${t7}.${subEvent}`).digest('hex');
+    const subHook = await j('POST', '/api/webhooks/stripe', subEvent, { 'stripe-signature': `t=${t7},v1=${sig7}` });
+    ok('abonelik webhook ile aktifleşti', subHook.status === 200 && subHook.json.activated === true, JSON.stringify(subHook.json));
+
+    const afterSub = await j('GET', '/api/subscription', undefined, SH);
+    ok('abonelik aktif görünüyor', afterSub.json.active === true && afterSub.json.adFree === true && afterSub.json.bonusFreeVotes >= 4, JSON.stringify(afterSub.json));
+
+    const freeAfter = await j('GET', '/api/session', undefined, SH);
+    ok('destekçinin günlük hakkı yükseldi (1 + bonus)', freeAfter.json.freePerDay === 1 + afterSub.json.bonusFreeVotes, JSON.stringify({ f: freeAfter.json.freePerDay }));
+    ok('oturumda destekçi bilgisi dönüyor', freeAfter.json.supporter && freeAfter.json.supporter.active === true, JSON.stringify(freeAfter.json.supporter));
+
+    // Yenileme: invoice.paid dönem sonunu ileri taşır
+    const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const renew = JSON.stringify({ type: 'invoice.paid', data: { object: { subscription: 'sub_test_777', lines: { data: [{ period: { end: periodEnd } }] } } } });
+    const t8 = Math.floor(Date.now() / 1000);
+    const sig8 = crypto.createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET).update(`${t8}.${renew}`).digest('hex');
+    const renewHook = await j('POST', '/api/webhooks/stripe', renew, { 'stripe-signature': `t=${t8},v1=${sig8}` });
+    ok('yenileme olayı işlendi', renewHook.status === 200 && renewHook.json.handled === true && !!renewHook.json.subscription, JSON.stringify(renewHook.json).slice(0, 160));
+
+    // İptal: abonelik pasife düşer, kota normale iner
+    const cancel = JSON.stringify({ type: 'customer.subscription.deleted', data: { object: { id: 'sub_test_777', status: 'canceled' } } });
+    const t9 = Math.floor(Date.now() / 1000);
+    const sig9 = crypto.createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET).update(`${t9}.${cancel}`).digest('hex');
+    await j('POST', '/api/webhooks/stripe', cancel, { 'stripe-signature': `t=${t9},v1=${sig9}` });
+    const afterCancel = await j('GET', '/api/subscription', undefined, SH);
+    ok('iptal sonrası üyelik pasif', afterCancel.json.active === false, JSON.stringify(afterCancel.json));
+    const freeCanceled = await j('GET', '/api/session', undefined, SH);
+    ok('iptal sonrası günlük hak normale döndü', freeCanceled.json.freePerDay === 1, JSON.stringify({ f: freeCanceled.json.freePerDay }));
+
+    // Admin: elle aktifleştirme (havale/nakit) ve MRR
+    const ADMINH = { 'x-gl-admin': '' };
+    const adminCookieArr = (await (await fetch('http://127.0.0.1:' + server.address().port + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: process.env.GL_ADMIN_PASSWORD }) })).headers.getSetCookie()).map(c => c.split(';')[0]).join('; ');
+    ADMINH['cookie'] = adminCookieArr;
+    const grant = await j('POST', '/api/admin/subscriptions/grant', { identifier: 'supporter_user', months: 3 }, ADMINH);
+    ok('admin elle destekçi aktifleştirebiliyor', grant.status === 200 && grant.json.ok === true && grant.json.subscription.status === 'active', JSON.stringify(grant.json).slice(0, 160));
+    const list = await j('GET', '/api/admin/subscriptions', undefined, ADMINH);
+    ok('abonelik listesi ve MRR hesaplanıyor', list.status === 200 && list.json.stats.active >= 1 && list.json.stats.mrr > 0, JSON.stringify(list.json.stats));
+    const dash = await j('GET', '/api/admin/dashboard', undefined, ADMINH);
+    ok('panel MRR gösteriyor', dash.status === 200 && dash.json.subscriptions && dash.json.subscriptions.mrr > 0, JSON.stringify(dash.json.subscriptions || {}));
+    const revoke = await j('POST', `/api/admin/subscriptions/${grant.json.subscription.id}/revoke`, {}, ADMINH);
+    ok('admin aboneliği iptal edebiliyor', revoke.status === 200 && revoke.json.subscription.status === 'canceled', JSON.stringify(revoke.json).slice(0, 140));
+
+    // Fiyat kademeleri
+    const p1 = await j('POST', '/api/purchase/intent', { kind: 'votes', reference: 'votes-10', method: 'crypto' }, SH);
+    ok('10 oy paketi $5', p1.json.amountUsd === 5, JSON.stringify(p1.json).slice(0, 120));
+    const p2 = await j('POST', '/api/purchase/intent', { kind: 'votes', reference: 'votes-60', method: 'crypto' }, SH);
+    ok('60 oy paketi $20', p2.json.amountUsd === 20, JSON.stringify(p2.json).slice(0, 120));
+    const p3 = await j('POST', '/api/purchase/intent', { kind: 'votes', reference: 'votes-250', method: 'crypto' }, SH);
+    ok('250 oy paketi $50 (yeni kademe)', p3.json.amountUsd === 50, JSON.stringify(p3.json).slice(0, 120));
+    const bogus = await j('POST', '/api/purchase/intent', { kind: 'votes', reference: 'votes-1000', method: 'crypto' }, SH);
+    ok('olmayan paket reddedildi', bogus.status === 400 && bogus.json.error === 'pack_not_found', JSON.stringify(bogus.json));
+  }
 
   server.close();
   db.close && db.close();

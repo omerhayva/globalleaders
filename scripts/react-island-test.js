@@ -106,7 +106,7 @@ const BASE = 'http://localhost:3000';
   GLUI.openBuyVotes();
   await sleep(400);
   modal = document.querySelector('#modals .modal');
-  ok(!!modal && /Buy vote packs/.test(modal.textContent) && modal.querySelectorAll('.pack').length === 2, 'oy paketi modalı + 2 paket');
+  ok(!!modal && /Buy vote packs/.test(modal.textContent) && modal.querySelectorAll('.pack').length === 3, 'oy paketi modalı + 3 paket');
   modal.querySelector('.close').click(); await sleep(50);
 
   GLUI.openMyVotes();
@@ -144,8 +144,8 @@ const BASE = 'http://localhost:3000';
   await sleep(400);
   modal = document.querySelector('#modals .modal');
   const packs = modal && modal.querySelectorAll('.pack');
-  ok(packs && packs.length === 2, 'oy paketi modalı açıldı (2 paket)');
-  if (packs && packs.length === 2) {
+  ok(packs && packs.length === 3, 'oy paketi modalı açıldı (3 paket)');
+  if (packs && packs.length === 3) {
     packs[1].click(); await sleep(600); // 60 OY paketi seç + niyet isteği gelsin
     const setInput = (el, value) => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
