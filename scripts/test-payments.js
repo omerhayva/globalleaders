@@ -320,6 +320,12 @@ const j = async (method, url, body, headers = {}) => {
     const freeCanceled = await j('GET', '/api/session', undefined, SH);
     ok('iptal sonrası günlük hak normale döndü', freeCanceled.json.freePerDay === 1, JSON.stringify({ f: freeCanceled.json.freePerDay }));
 
+    // İptal yolu: Stripe faturalama portalı yalnızca kart üyeliğine açık.
+    const portalAnon = await j('POST', '/api/subscription/portal', {}, { 'x-gl-session': 'c'.repeat(32) });
+    ok('giriş yapmadan üyelik yönetimi yok (401)', portalAnon.status === 401, `status=${portalAnon.status}`);
+    const portalNoCard = await j('POST', '/api/subscription/portal', {}, SH);
+    ok('kartla alınmayan üyelikte portal kapalı (400)', portalNoCard.status === 400 && portalNoCard.json.error === 'no_card_membership', JSON.stringify(portalNoCard.json));
+
     // Admin: elle aktifleştirme (havale/nakit) ve MRR
     const ADMINH = { 'x-gl-admin': '' };
     const adminCookieArr = (await (await fetch('http://127.0.0.1:' + server.address().port + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: process.env.GL_ADMIN_PASSWORD }) })).headers.getSetCookie()).map(c => c.split(';')[0]).join('; ');

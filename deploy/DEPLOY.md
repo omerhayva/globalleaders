@@ -19,6 +19,7 @@ nano .env
 | `STRIPE_SECRET_KEY` | Stripe → Developers → API keys (`sk_live_...`) | Kart için evet |
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Developers → Webhooks → uç noktayı ekleyince verilen `whsec_...` | Kart için evet |
 | `GL_ADMIN_SECRET`, `GL_ADMIN_PASSWORD`, `GL_FRAUD_SALT` | Rastgele uzun değerler (`openssl rand -hex 32`) | Evet |
+| `SUPPORTER_PRICE_USD` / `SUPPORTER_BONUS_VOTES` / `SUPPORTER_AD_FREE` | Destekçi üyeliği: aylık fiyat (varsayılan 4.99), günlük ek oy (4), reklamsız (1) | Hayır (varsayılanlar uygun) |
 
 Kart anahtarı boşsa sitede kart seçeneği hiç görünmez; kripto çalışmaya devam eder.
 Cüzdan adresi boşsa satın alma başlatılamaz (kullanıcıya "yapılandırılmadı" hatası döner).
@@ -27,9 +28,22 @@ Cüzdan adresi boşsa satın alma başlatılamaz (kullanıcıya "yapılandırıl
 
 ## 2) Yayına alma
 
+Önce yayın öncesi kontrol — eksik/yanlış yapılandırmayı canlıya çıkmadan yakalar:
+
+```bash
+npm run preflight
+```
+
+Zorunlu maddeler yeşilse:
+
 ```bash
 docker compose up -d --build
 ```
+
+Destekçi aboneliği (aylık yinelenen gelir) **kart ile** satılır ve **hesaba bağlıdır**;
+kripto tek seferlik paketlerde kalır. Kart anahtarı yoksa üyelik düğmesi çalışmaz ama
+site ve kripto ödemeler normal çalışır. Kart üyeliğini iptal eden kullanıcı,
+hesabındaki **"Manage or cancel membership"** düğmesiyle Stripe faturalama portalına gider.
 
 Ardından HTTPS sertifikası (tek seferlik):
 
@@ -51,10 +65,12 @@ Sertifika yenileme `certbot` konteyneri tarafından otomatik yapılır.
 1. Stripe → Developers → Webhooks → **Add endpoint**
 2. URL: `https://globalleaders.live/api/webhooks/stripe`
 3. Olaylar:
-   - `checkout.session.completed` (ödeme alındı → satın alma otomatik aktifleşir)
+   - `checkout.session.completed` (ödeme alındı → satın alma/üyelik otomatik aktifleşir)
    - `checkout.session.expired`
    - `payment_intent.succeeded`
    - `payment_intent.payment_failed`
+   - `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` (destekçi üyeliği başlar/yenilenir/iptal edilir)
+   - `invoice.paid`, `invoice.payment_failed` (aylık yenileme başarılı/başarısız → dönem sonu güncellenir)
 4. Uç noktayı kaydedin, verilen `whsec_...` değerini `.env` içindeki
    `STRIPE_WEBHOOK_SECRET` alanına yazın ve `docker compose up -d` ile yeniden başlatın.
 5. Stripe panelinden **Send test webhook** ile doğrulayın; admin panelindeki
@@ -65,6 +81,16 @@ Sertifika yenileme `certbot` konteyneri tarafından otomatik yapılır.
 > üretimde mutlaka doldurulmalıdır.
 
 ---
+
+## 3b) Fiyatlar (2026 sürümü)
+
+| Ürün | Fiyat | Not |
+|---|---|---|
+| Oy paketi | 10 oy $5 · 60 oy $20 · 250 oy $50 | Tek seferlik; oy başına $0.50 → $0.20 |
+| Reklam alanı / millî marş | $5 | Yerini başkası alana kadar sahiplik |
+| **Supporter üyeliği** | **$4.99/ay** | Kartla, otomatik yenilenir; +4 günlük oy (günde 5), reklamsız, ★ rozet |
+
+Destekçi üyeliği hesaba bağlıdır (giriş gerekir); **oy vermek için kayıt zorunlu değildir.**
 
 ## 4) Kripto: "para geldi mi?" nasıl anlaşılır
 
@@ -104,6 +130,7 @@ docker compose cp app:/data ./yedekler
 ```bash
 curl -s https://globalleaders.live/api/stats            # site ayakta mı
 curl -s https://globalleaders.live/api/payment-methods  # ödeme yöntemleri açık mı
+curl -s https://globalleaders.live/api/subscription      # destekçi üyeliği fiyatı/ayarları
 docker compose logs -f app                              # uygulama logları
 docker compose logs -f nginx                            # erişim logları
 ```

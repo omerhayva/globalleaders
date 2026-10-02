@@ -12,7 +12,8 @@
     "test:payments": "node scripts/test-payments.js",
     "test:all": "node scripts/test-site.js && node scripts/test-payments.js && node scripts/react-island-real-auth-test.js && node scripts/test-abuse.js",
     "test:site": "node scripts/test-site.js",
-    "test:abuse": "node scripts/test-abuse.js"
+    "test:abuse": "node scripts/test-abuse.js",
+    "preflight": "node scripts/preflight.js"
   },
   "keywords": [],
   "author": "",

@@ -112,6 +112,13 @@ function setStatus({ stripeSubscriptionId = null, id = null, status, periodEnd =
 
 const revoke = ({ id }) => setStatus({ id, status: 'canceled' });
 
+// Üyenin kendi üyeliğini yönetebilmesi (Stripe faturalama portalı) için gereken kimlikler.
+function stripeIds(sessionId) {
+  const row = forSession(sessionId);
+  if (!row) return null;
+  return { stripeCustomerId: row.stripe_customer_id || null, stripeSubscriptionId: row.stripe_subscription_id || null, provider: row.provider || null };
+}
+
 function list({ limit = 200 } = {}) {
   ensureSchema();
   return db.prepare(`SELECT s.*, COALESCE(u.username, u.email) AS member
@@ -123,6 +130,8 @@ function status(sessionId) {
   const row = forSession(sessionId);
   return {
     active: !!row,
+    // Kartla alınmış üyelikler Stripe portalından tek tıkla yönetilebilir/iptal edilebilir.
+    manageable: !!(row && row.stripe_customer_id),
     plan: PLAN,
     priceUsd: PRICE_USD(),
     interval: 'month',
@@ -141,4 +150,4 @@ function stats() {
   return { active, canceled, mrr: Number(Number(mrr).toFixed(2)), priceUsd: PRICE_USD(), bonusFreeVotes: BONUS_FREE_VOTES(), adFree: AD_FREE(), plan: PLAN };
 }
 
-module.exports = { ensureSchema, isSupporter, forSession, bonusFreeVotes, activate, setStatus, revoke, list, status, stats, PRICE_USD, BONUS_FREE_VOTES, AD_FREE, PLAN };
+module.exports = { ensureSchema, isSupporter, forSession, stripeIds, bonusFreeVotes, activate, setStatus, revoke, list, status, stats, PRICE_USD, BONUS_FREE_VOTES, AD_FREE, PLAN };

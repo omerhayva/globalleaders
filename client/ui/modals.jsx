@@ -295,6 +295,15 @@ export function SupporterModal() {
     } catch (e) { setError(e && (e.message || e.error) || 'Membership checkout failed'); }
     finally { setBusy(false); }
   };
+  const manage = async () => {
+    setBusy(true); setError(null);
+    try {
+      const r = await api('/api/subscription/portal', { method: 'POST', body: {} });
+      if (r && r.url) { location.href = r.url; return; }
+      setError('Could not open the billing portal.');
+    } catch (e) { setError(e && (e.message || e.error) || 'Could not open the billing portal.'); }
+    finally { setBusy(false); }
+  };
   if (active) return <div><h3>⭐ Supporter membership</h3>
     <p className="muted small">Thank you! Your membership is active{status.currentPeriodEnd ? ` until ${String(status.currentPeriodEnd).slice(0, 10)}` : ''}.</p>
     <div className="pack-grid" style={{ gridTemplateColumns: '1fr' }}>
@@ -302,7 +311,11 @@ export function SupporterModal() {
       {status.adFree ? <div className="pack"><b>🚫</b><span>ADS HIDDEN</span></div> : null}
       <div className="pack"><b>★</b><span>SUPPORTER BADGE</span></div>
     </div>
-    <p className="muted small center" style={{ marginTop: '0.6rem' }}>Renews monthly until cancelled. To cancel, reply to your Stripe receipt or contact us.</p>
+    {error ? <PayError message={error} onRetry={manage} /> : null}
+    {status.manageable
+      ? <button className="btn btn-ghost big" style={{ width: '100%', marginTop: '0.6rem' }} disabled={busy} onClick={manage}>{busy ? 'OPENING…' : 'MANAGE OR CANCEL MEMBERSHIP'}</button>
+      : null}
+    <p className="muted small center" style={{ marginTop: '0.6rem' }}>Renews monthly until cancelled. {status.manageable ? 'Cancel any time in one click above — you keep supporter benefits until the end of the paid period.' : 'To cancel, reply to your Stripe receipt or contact us.'}</p>
   </div>;
   return <div><h3>⭐ Become a supporter</h3>
     <p className="muted small">Membership is linked to your account and renews monthly.</p>

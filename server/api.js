@@ -154,6 +154,32 @@ router.post('/subscription/confirm', rateLimit({ windowMs: 10 * 60_000, max: 10,
   res.status(409).json({ error: 'payment_not_pending', status: conf.status });
 });
 
+// Üyenin kendi üyeliğini iptal etmesi: Stripe faturalama portalı oturumu açar.
+// Kart üyeliği olmayanlar (elle aktifleştirilenler) için destek kanalı geçerli.
+router.post('/subscription/portal', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'sub-portal' }), async (req, res) => {
+  const id = identityFor(req);
+  if (!id.user) return res.status(401).json({ error: 'sign_in_required' });
+  const ids = subscriptions.stripeIds(id.voteKey);
+  if (!ids || !ids.stripeCustomerId) return res.status(400).json({ error: 'no_card_membership', message: 'This membership is not managed by Stripe. Contact us to cancel.' });
+  const key = process.env.STRIPE_SECRET_KEY || '';
+  if (!key) return res.status(503).json({ error: 'card_payments_not_configured' });
+  try {
+    const params = new URLSearchParams();
+    params.set('customer', ids.stripeCustomerId);
+    params.set('return_url', `${String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')}/account`);
+    const r = await fetch(`${process.env.STRIPE_API_BASE || 'https://api.stripe.com'}/v1/billing_portal/sessions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+    const session = await r.json().catch(() => ({}));
+    if (!r.ok || !session.url) return res.status(502).json({ error: 'portal_failed', detail: (session && session.error && session.error.message) || `HTTP ${r.status}` });
+    res.json({ url: session.url });
+  } catch (e) {
+    res.status(502).json({ error: 'portal_failed', detail: String(e && e.message || e) });
+  }
+});
+
 router.post('/purchase/intent', rateLimit({ windowMs: 10 * 60_000, max: 10, name: 'purchase-intent' }), async (req, res) => {
   if (mockPaymentsLive()) return res.status(503).json({ error: 'payment_provider_not_configured', message: 'Real payments are not configured yet.' });
   const { kind, reference, advertiser, method } = req.body || {}; if (!['ad', 'anthem', 'votes'].includes(kind)) return res.status(400).json({ error: 'bad_kind' });
